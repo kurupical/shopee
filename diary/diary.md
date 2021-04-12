@@ -63,3 +63,10 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp013: BERT+image(512*512)
   CV: 0.837(fold0) -> LB: 0.727 (th=15)
 * exp014: BERT-CNNでdropout平等 + いろいろ実験
+
+# 2021/4/12
+* cpptakeさんに教えてもらったAdacosをベースに論文調査
+* exp016: bert-base-indonesian-522M -> そんな変わらん
+
+* exp018: distanceを正規分布過程で疑似的に65000件生成し、70000件での画像検索を想定する
+![img_5.png](img_5.png)

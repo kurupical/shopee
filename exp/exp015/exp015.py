@@ -49,7 +49,8 @@ def getMetric(col):
 class Config:
     # model
     linear_out = 512
-    dropout = 0.5
+    dropout_nlp = 0.5
+    dropout_cnn = 0.5
     model_name = "efficientnet_b3"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
@@ -64,7 +65,7 @@ class Config:
     # optim
     optimizer: Optimizer = Adam
     optimizer_params = {}
-    base_lr = 1e-4
+    base_lr = 5e-4
     bert_lr = 1e-5
 
     scheduler = ReduceLROnPlateau
@@ -121,7 +122,8 @@ class ShopeeNet(nn.Module):
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
+        self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = ArcMarginProduct(s=config.s,
                                       m=config.m,
                                       in_features=config.linear_out,
@@ -130,11 +132,11 @@ class ShopeeNet(nn.Module):
     def forward(self, X_image, input_ids, attention_mask, label=None):
         x = self.cnn(X_image)
         x = self.cnn_bn(x)
-        x = self.dropout(x)
+        x = self.dropout_cnn(x)
 
         text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
         text = self.bert_bn(text)
-        text = self.dropout(text)
+        text = self.dropout_nlp(text)
 
         x = torch.cat([x, text], dim=1)
         ret = self.fc(x)
@@ -305,7 +307,7 @@ def eval_fn(data_loader, model, criterion, device, df_val):
 def get_cv(df):
     tmp = df.groupby('label_group').posting_id.agg('unique').to_dict()
     df['target'] = df.label_group.map(tmp)
-    df['f1'] = df.apply(getMetric('pred'),axis=1)
+    df['f1'] = df.apply(getMetric('pred'), axis=1)
     return df.f1.mean()
 
 
@@ -452,21 +454,33 @@ if __name__ == "__main__":
     config = Config()
     config.scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
     main(config)
-    """
+    
     # for base_lr in [3e-4, 5e-5, 5e-4]:
-    for base_lr in [5e-4]:
+    for base_lr in [1e-3]:
         config = Config()
         config.base_lr = base_lr
         main(config)
 
-    for bert_lr in [3e-5, 5e-6, 5e-5]:
+    for dropout in [0]:
         config = Config()
-        config.bert_lr = bert_lr
+        config.dropout_nlp = dropout
+        config.dropout_cnn = dropout
+        main(config)
+    """
+
+    for dropout in [0, 0.2]:
+        config = Config()
+        config.dropout_nlp = dropout
         main(config)
 
-    for dropout in [0, 0.1, 0.2]:
+    for dropout in [0, 0.2]:
         config = Config()
-        config.dropout = dropout
+        config.dropout_cnn = dropout
+        main(config)
+
+    for linear_out in [256]:
+        config = Config()
+        config.linear_out = linear_out
         main(config)
 
     """

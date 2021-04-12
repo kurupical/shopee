@@ -21,6 +21,7 @@ from albumentations.pytorch.transforms import ToTensorV2
 import dataclasses
 import tqdm
 from datetime import datetime as dt
+import matplotlib.pyplot as plt
 import time
 """
 とりあえずこれベースに頑張って写経する
@@ -49,7 +50,8 @@ def getMetric(col):
 class Config:
     # model
     linear_out = 512
-    dropout = 0.5
+    dropout_nlp = 0.5
+    dropout_cnn = 0.5
     model_name = "efficientnet_b3"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
@@ -64,7 +66,7 @@ class Config:
     # optim
     optimizer: Optimizer = Adam
     optimizer_params = {}
-    base_lr = 1e-4
+    base_lr = 5e-4
     bert_lr = 1e-5
 
     scheduler = ReduceLROnPlateau
@@ -121,7 +123,8 @@ class ShopeeNet(nn.Module):
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
+        self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = ArcMarginProduct(s=config.s,
                                       m=config.m,
                                       in_features=config.linear_out,
@@ -130,11 +133,11 @@ class ShopeeNet(nn.Module):
     def forward(self, X_image, input_ids, attention_mask, label=None):
         x = self.cnn(X_image)
         x = self.cnn_bn(x)
-        x = self.dropout(x)
+        x = self.dropout_cnn(x)
 
         text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
         text = self.bert_bn(text)
-        text = self.dropout(text)
+        text = self.dropout_nlp(text)
 
         x = torch.cat([x, text], dim=1)
         ret = self.fc(x)
@@ -305,16 +308,13 @@ def eval_fn(data_loader, model, criterion, device, df_val):
 def get_cv(df):
     tmp = df.groupby('label_group').posting_id.agg('unique').to_dict()
     df['target'] = df.label_group.map(tmp)
-    df['f1'] = df.apply(getMetric('pred'),axis=1)
+    df['f1'] = df.apply(getMetric('pred'), axis=1)
     return df.f1.mean()
 
 
 def get_best_neighbors(embeddings, df):
 
-    if len(df) > 50:
-        model = NearestNeighbors(n_neighbors=50, )
-    else:
-        model = NearestNeighbors(n_neighbors=len(df) - 1)
+    model = NearestNeighbors(n_neighbors=len(df), n_jobs=32)
     model.fit(embeddings)
     distances, indices = model.kneighbors(embeddings)
 
@@ -323,9 +323,24 @@ def get_best_neighbors(embeddings, df):
     best_th = 0
     best_score = 0
 
-    posting_ids = df["posting_id"].values
+    # サンプル数をtest setとあわせる。
+    # 距離の分布: N(distances.mean(), distances.std())に従うとする... ちょっと乱暴かな?
+    n_dummy = 65000
+    w_distances = distances[distances > 0.1]
+    dummy_distances = np.random.normal(w_distances.mean(), w_distances.std(), [len(df), n_dummy])
+    dummy_indices = np.tile(len(df), [len(df), n_dummy])  # index=len(df) -> dummy
     print(f"distances shape: {distances.shape} mean: {distances.mean()}, std: {distances.std()}")
-    for th in np.arange(0, 5, 0.1).tolist() + np.arange(5, 10, 0.2).tolist() + np.arange(10, 20, 0.5).tolist() + np.arange(20, 50, 3).tolist():
+    print(f"distances shape: {w_distances.shape} mean: {w_distances.mean()}, std: {w_distances.std()}")
+
+    plt.hist(distances[:100].flatten(), bins=200)
+    plt.savefig(f"{dt.now().strftime('%Y%m%d%H%M%S')}.jpg")
+
+    distances = np.concatenate([distances, dummy_distances], axis=1)
+    indices = np.concatenate([indices, dummy_indices], axis=1)
+    posting_ids = np.array(df["posting_id"].values.tolist() + ["dummy_data"])
+    print(f"make dummy data! shape: {distances.shape}")
+
+    for th in np.arange(0, 20, 0.5).tolist() + np.arange(20, 50, 3).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -352,6 +367,8 @@ def main(config):
     # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=min_lr, last_epoch=-1)
 
     df = pd.read_csv("input/shopee-product-matching/train_fold.csv")
+
+    df["title"] = [x.lower() for x in df["title"].values]
     df["filepath"] = df['image'].apply(lambda x: os.path.join('input/shopee-product-matching/', 'train_images', x))
     label_encoder = LabelEncoder()
     df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
@@ -444,35 +461,7 @@ def main(config):
 
 if __name__ == "__main__":
 
-    """
     # benchmarking
     config = Config()
     main(config)
-
-    config = Config()
-    config.scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
-    main(config)
-    """
-    # for base_lr in [3e-4, 5e-5, 5e-4]:
-    for base_lr in [5e-4]:
-        config = Config()
-        config.base_lr = base_lr
-        main(config)
-
-    for bert_lr in [3e-5, 5e-6, 5e-5]:
-        config = Config()
-        config.bert_lr = bert_lr
-        main(config)
-
-    for dropout in [0, 0.1, 0.2]:
-        config = Config()
-        config.dropout = dropout
-        main(config)
-
-    """
-    for bert_agg in ["max", "min"]:
-        config = Config()
-        config.bert_agg = bert_agg
-        main(config)
-    """
 
