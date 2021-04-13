@@ -72,20 +72,20 @@ class Config:
     bert_lr = 1e-5
 
     scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 1, "factor": 0.1, "mode": "max"}
+    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
 
     loss = nn.CrossEntropyLoss
     loss_params = {}
 
     # training
-    batch_size = 16
+    batch_size = 12
     num_workers = 1
 
-    epochs = 30
+    epochs = 1
     early_stop_round = 3
 
     # debug mode
-    debug = False
+    debug = True
 
     # transforms
     train_transforms = albumentations.Compose([
@@ -273,7 +273,7 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
     return loss_score
 
 
-def eval_fn(data_loader, model, criterion, device, df_val):
+def eval_fn(data_loader, model, criterion, device, df_val, epoch, output_dir):
     loss_score = AverageMeter()
 
     model.eval()
@@ -302,7 +302,10 @@ def eval_fn(data_loader, model, criterion, device, df_val):
 
     all_features = np.array(all_features, dtype=np.float32)
 
-    best_score, best_th, df_best = get_best_neighbors(df=df_val, embeddings=all_features)
+    best_score, best_th, df_best = get_best_neighbors(df=df_val,
+                                                      embeddings=all_features,
+                                                      epoch=epoch,
+                                                      output_dir=output_dir)
 
     return loss_score, best_score, best_th, df_best
 
@@ -314,7 +317,7 @@ def get_cv(df):
     return df.f1.mean()
 
 
-def get_best_neighbors(embeddings, df):
+def get_best_neighbors(embeddings, df, epoch, output_dir):
 
     model = NearestNeighbors(n_neighbors=len(df), n_jobs=32)
     model.fit(embeddings)
@@ -325,26 +328,15 @@ def get_best_neighbors(embeddings, df):
     best_th = 0
     best_score = 0
 
-    # サンプル数をtest setとあわせる。
-    # 距離の分布: N(distances.mean(), distances.std())に従うとする... ちょっと乱暴かな?
-    n_dummy = 65000
-    w_distances = distances[distances > 0.1]
-    dummy_distances = np.random.normal(w_distances.mean(), w_distances.std(), [len(df), n_dummy])
-    dummy_indices = np.tile(len(df), [len(df), n_dummy])  # index=len(df) -> dummy
-    print(f"distances shape: {distances.shape} mean: {distances.mean()}, std: {distances.std()}")
-    print(f"distances shape: {w_distances.shape} mean: {w_distances.mean()}, std: {w_distances.std()}")
-
     plt.hist(distances[:100].flatten(), bins=200)
     plt.savefig(f"{dt.now().strftime('%Y%m%d%H%M%S')}.jpg")
     plt.clf()
 
-    distances = np.concatenate([distances, dummy_distances], axis=1)
-    indices = np.concatenate([indices, dummy_indices], axis=1)
-    posting_ids = np.array(df["posting_id"].values.tolist() + ["dummy_data"])
-    print(f"make dummy data! shape: {distances.shape}")
-
+    posting_ids = np.array(df["posting_id"].values.tolist())
     distances = np.array(distances, dtype=np.float16)
-    for th in np.arange(12, 20, 0.5).tolist() + np.arange(20, 30, 5).tolist():
+    np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
+    np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
+    for th in np.arange(10, 20, 0.5).tolist() + np.arange(20, 40, 5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -363,7 +355,7 @@ def get_best_neighbors(embeddings, df):
     return best_score, best_th, df_best
 
 
-def main(config):
+def main(config, fold=0):
     import mlflow
     seed_torch(19900222)
     output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
@@ -384,59 +376,67 @@ def main(config):
 
     if config.debug:
         df = df.iloc[:100]
-    for fold in [0]:
-        mlflow.start_run(experiment_id=0,
-                         run_name=os.path.basename(__file__))
 
-        df_train = df[df["fold"] != fold]
-        df_val = df[df["fold"] == fold]
-        # df_train = df[df["label_group"] % 5 != 0]
-        # df_val = df[df["label_group"] % 5 == 0]
+    df_train = df[df["fold"] != fold]
+    df_val = df[df["fold"] == fold]
+    # df_train = df[df["label_group"] % 5 != 0]
+    # df_val = df[df["label_group"] % 5 == 0]
 
-        train_dataset = ShopeeDataset(df=df_train,
-                                      transforms=config.train_transforms,
-                                      tokenizer=tokenizer)
-        val_dataset = ShopeeDataset(df=df_val,
-                                    transforms=config.val_transforms,
-                                    tokenizer=tokenizer)
+    train_dataset = ShopeeDataset(df=df_train,
+                                  transforms=config.train_transforms,
+                                  tokenizer=tokenizer)
+    val_dataset = ShopeeDataset(df=df_val,
+                                transforms=config.val_transforms,
+                                tokenizer=tokenizer)
 
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_size=config.batch_size,
-            shuffle=True,
-            pin_memory=True,
-            drop_last=True,
-            num_workers=config.num_workers
-        )
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        pin_memory=True,
+        drop_last=True,
+        num_workers=config.num_workers
+    )
 
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=config.batch_size,
-            num_workers=config.num_workers,
-            shuffle=False,
-            pin_memory=True,
-            drop_last=False,
-        )
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        num_workers=config.num_workers,
+        shuffle=False,
+        pin_memory=True,
+        drop_last=False,
+    )
 
-        device = torch.device("cuda")
+    device = torch.device("cuda")
 
-        model = ShopeeNet(config=config)
-        model.to("cuda")
-        optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
-                                             {"params": model.cnn.parameters(), "lr": config.base_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
-                                             {"params": model.fc.parameters(), "lr": config.base_lr},
-                                             {"params": model.final.parameters(), "lr": config.base_lr}])
+    def train(model, pretrain):
+        if pretrain:
+            optimizer = config.optimizer(params=[{"params": model.cnn.parameters(), "lr": config.base_lr},
+                                                 {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
+                                                 {"params": model.fc.parameters(), "lr": config.base_lr},
+                                                 {"params": model.final.parameters(), "lr": config.base_lr}])
+        else:
+            optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
+                                                 {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
+                                                 {"params": model.cnn.parameters(), "lr": config.base_lr},
+                                                 {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
+                                                 {"params": model.fc.parameters(), "lr": config.base_lr},
+                                                 {"params": model.final.parameters(), "lr": config.base_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
         best_score = 0
         not_improved_epochs = 0
+        mlflow.start_run(experiment_id=0,
+                         run_name=os.path.basename(__file__))
+        mlflow.log_param("fold", fold)
+        mlflow.log_param("pretrain_cnn", pretrain)
+
         for epoch in range(config.epochs):
             train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
 
-            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val)
+            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch,
+                                                                 output_dir)
             scheduler.step(score)
 
             print(f"CV: {score}")
@@ -449,11 +449,11 @@ def main(config):
                 df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
             else:
                 not_improved_epochs += 1
-                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs, config.early_stop_round))
+                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs,
+                                                                                config.early_stop_round))
                 if not_improved_epochs >= config.early_stop_round:
                     print("finish training.")
                     break
-            mlflow.log_param("fold", fold)
             mlflow.log_metric("val_loss", valid_loss.avg)
             mlflow.log_metric("val_cv_score", score)
             mlflow.log_metric("val_best_threshold", best_threshold)
@@ -462,26 +462,35 @@ def main(config):
             mlflow.log_param(key, value)
         mlflow.end_run()
 
+    # ===================================
+    # stage 1
+    # ===================================
+    model = ShopeeNet(config=config)
+    model.to("cuda")
+
+    dropout_nlp_original = config.dropout_nlp
+    config.dropout_nlp = 1
+    train(model=model, pretrain=True)
+
+    cnn_pretrained = model.cnn
+
+    # ===================================
+    # stage 2
+    # ===================================
+    model = ShopeeNet(config=config)
+    model.cnn = cnn_pretrained
+    model.to("cuda")
+
+    config.dropout_nlp = dropout_nlp_original
+    config.base_lr /= 10
+    train(model=model, pretrain=False)
+
 
 def main_process():
-    """
-    # AdamW
-    try:
-        config = Config()
-        config.optimizer = AdamW
-        main(config)
-    except Exception as e:
-        print(f"ERROR: {e}")
-
-    # benchmark
-    config = Config()
-    main(config)
-    """
-    for gamma in [0.9998, 0.9995]:
-        config = Config()
-        config.scheduler = StepLR
-        config.scheduler_params = {"step_size": 1, "gamma": gamma}
-        main(config)
+    for base_lr in [1e-3, 2e-3]:
+        cfg = Config()
+        cfg.base_lr = base_lr
+        main(cfg)
 
 if __name__ == "__main__":
     main_process()

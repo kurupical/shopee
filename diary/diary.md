@@ -68,5 +68,10 @@ https://www.mindmeister.com/1844996822?e=turtle
 * cpptakeさんに教えてもらったAdacosをベースに論文調査
 * exp016: bert-base-indonesian-522M -> そんな変わらん
 
-* exp018: distanceを正規分布過程で疑似的に65000件生成し、70000件での画像検索を想定する
+* exp017: distanceを正規分布過程で疑似的に65000件生成し、70000件での画像検索を想定する
 ![img_5.png](img_5.png)
+  
+* exp018: exp013 + OCR -> そんなに
+
+* exp019: いろんなモデル試す + アンサンブルできるようにする
+* exp020: アンサンブル実験用コード(fold同じ)

@@ -21,9 +21,6 @@ from albumentations.pytorch.transforms import ToTensorV2
 import dataclasses
 import tqdm
 from datetime import datetime as dt
-import matplotlib.pyplot as plt
-import time
-from transformers import AdamW, get_linear_schedule_with_warmup
 
 """
 とりあえずこれベースに頑張って写経する
@@ -52,8 +49,7 @@ def getMetric(col):
 class Config:
     # model
     linear_out = 512
-    dropout_nlp = 0.5
-    dropout_cnn = 0.5
+    dropout = 0.5
     model_name = "efficientnet_b3"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
@@ -82,7 +78,7 @@ class Config:
     num_workers = 1
 
     epochs = 30
-    early_stop_round = 3
+    early_stop_round = 5
 
     # debug mode
     debug = False
@@ -120,28 +116,28 @@ class ShopeeNet(nn.Module):
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
 
-        n_feat_concat = self.cnn.num_features + self.bert.config.hidden_size
+        n_feat_concat = self.cnn.num_features + self.bert.config.hidden_size * 2
         self.fc = nn.Sequential(
+            nn.Dropout(config.dropout),
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
-        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
-        self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = ArcMarginProduct(s=config.s,
                                       m=config.m,
                                       in_features=config.linear_out,
                                       out_features=num_classes)
 
-    def forward(self, X_image, input_ids, attention_mask, label=None):
+    def forward(self, X_image, input_ids, attention_mask, input_ids2, attention_mask2, label=None):
         x = self.cnn(X_image)
         x = self.cnn_bn(x)
-        x = self.dropout_cnn(x)
 
         text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
         text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
 
-        x = torch.cat([x, text], dim=1)
+        text2 = self.bert(input_ids=input_ids2, attention_mask=attention_mask2)[0].mean(axis=1)
+        text2 = self.bert_bn(text2)
+
+        x = torch.cat([x, text, text2], dim=1)
         ret = self.fc(x)
 
         if label is not None:
@@ -219,7 +215,12 @@ class ShopeeDataset(Dataset):
             augmented = self.augmentations(image=image)
             image = augmented['image']
 
-        return image, input_ids, attention_mask, torch.tensor(row.label_group)
+        text2 = row.ocr_text
+        text2 = self.tokenizer(text2, padding="max_length", max_length=128, truncation=True, return_tensors="pt")
+        input_ids2 = text2["input_ids"][0]
+        attention_mask2 = text2["attention_mask"][0]
+
+        return image, input_ids, attention_mask, torch.tensor(row.label_group), input_ids2, attention_mask2
 
 
 class AverageMeter(object):
@@ -253,10 +254,12 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
         input_ids = d[1].to(device)
         attention_mask = d[2].to(device)
         targets = d[3].to(device)
+        input_ids2 = d[4].to(device)
+        attention_mask2 = d[5].to(device)
 
         optimizer.zero_grad()
 
-        output, _ = model(images, input_ids, attention_mask, targets)
+        output, _ = model(images, input_ids, attention_mask, input_ids2, attention_mask2, targets)
 
         loss = criterion(output, targets)
 
@@ -289,8 +292,10 @@ def eval_fn(data_loader, model, criterion, device, df_val):
             input_ids = d[1].to(device)
             attention_mask = d[2].to(device)
             targets = d[3].to(device)
+            input_ids2 = d[4].to(device)
+            attention_mask2 = d[5].to(device)
 
-            output, feature = model(images, input_ids, attention_mask, targets)
+            output, feature = model(images, input_ids, attention_mask, input_ids2, attention_mask2, targets)
 
             loss = criterion(output, targets)
 
@@ -310,13 +315,16 @@ def eval_fn(data_loader, model, criterion, device, df_val):
 def get_cv(df):
     tmp = df.groupby('label_group').posting_id.agg('unique').to_dict()
     df['target'] = df.label_group.map(tmp)
-    df['f1'] = df.apply(getMetric('pred'), axis=1)
+    df['f1'] = df.apply(getMetric('pred'),axis=1)
     return df.f1.mean()
 
 
 def get_best_neighbors(embeddings, df):
 
-    model = NearestNeighbors(n_neighbors=len(df), n_jobs=32)
+    if len(df) > 50:
+        model = NearestNeighbors(n_neighbors=50, )
+    else:
+        model = NearestNeighbors(n_neighbors=len(df) - 1)
     model.fit(embeddings)
     distances, indices = model.kneighbors(embeddings)
 
@@ -325,26 +333,9 @@ def get_best_neighbors(embeddings, df):
     best_th = 0
     best_score = 0
 
-    # サンプル数をtest setとあわせる。
-    # 距離の分布: N(distances.mean(), distances.std())に従うとする... ちょっと乱暴かな?
-    n_dummy = 65000
-    w_distances = distances[distances > 0.1]
-    dummy_distances = np.random.normal(w_distances.mean(), w_distances.std(), [len(df), n_dummy])
-    dummy_indices = np.tile(len(df), [len(df), n_dummy])  # index=len(df) -> dummy
+    posting_ids = df["posting_id"].values
     print(f"distances shape: {distances.shape} mean: {distances.mean()}, std: {distances.std()}")
-    print(f"distances shape: {w_distances.shape} mean: {w_distances.mean()}, std: {w_distances.std()}")
-
-    plt.hist(distances[:100].flatten(), bins=200)
-    plt.savefig(f"{dt.now().strftime('%Y%m%d%H%M%S')}.jpg")
-    plt.clf()
-
-    distances = np.concatenate([distances, dummy_distances], axis=1)
-    indices = np.concatenate([indices, dummy_indices], axis=1)
-    posting_ids = np.array(df["posting_id"].values.tolist() + ["dummy_data"])
-    print(f"make dummy data! shape: {distances.shape}")
-
-    distances = np.array(distances, dtype=np.float16)
-    for th in np.arange(12, 20, 0.5).tolist() + np.arange(20, 30, 5).tolist():
+    for th in np.arange(0, 5, 0.1).tolist() + np.arange(5, 10, 0.2).tolist() + np.arange(10, 20, 0.5).tolist() + np.arange(20, 50, 3).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -370,9 +361,7 @@ def main(config):
     os.makedirs(output_dir)
     # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=min_lr, last_epoch=-1)
 
-    df = pd.read_csv("input/shopee-product-matching/train_fold.csv")
-
-    df["title"] = [x.lower() for x in df["title"].values]
+    df = pd.read_csv("input/shopee-product-matching/train_fold_with_ocr.csv")
     df["filepath"] = df['image'].apply(lambda x: os.path.join('input/shopee-product-matching/', 'train_images', x))
     label_encoder = LabelEncoder()
     df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
@@ -384,7 +373,8 @@ def main(config):
 
     if config.debug:
         df = df.iloc[:100]
-    for fold in [0]:
+    # for fold in [0, 1, 2, 3, 4]:
+    for fold in [2]:
         mlflow.start_run(experiment_id=0,
                          run_name=os.path.basename(__file__))
 
@@ -462,26 +452,17 @@ def main(config):
             mlflow.log_param(key, value)
         mlflow.end_run()
 
-
 def main_process():
-    """
-    # AdamW
-    try:
-        config = Config()
-        config.optimizer = AdamW
-        main(config)
-    except Exception as e:
-        print(f"ERROR: {e}")
-
-    # benchmark
     config = Config()
     main(config)
-    """
-    for gamma in [0.9998, 0.9995]:
-        config = Config()
-        config.scheduler = StepLR
-        config.scheduler_params = {"step_size": 1, "gamma": gamma}
-        main(config)
 
 if __name__ == "__main__":
     main_process()
+
+    """
+    for bert_agg in ["max", "min"]:
+        config = Config()
+        config.bert_agg = bert_agg
+        main(config)
+    """
+

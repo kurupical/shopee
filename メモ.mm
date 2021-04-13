@@ -17,6 +17,12 @@
 <node CREATED="1617791061399" ID="ID_113425604" MODIFIED="1617874782069" TEXT="BERT similarity">
 <icon BUILTIN="button_ok"/>
 </node>
+<node CREATED="1618182293666" ID="ID_76054042" MODIFIED="1618182301094" TEXT="CurricularFace">
+<node CREATED="1618182301626" ID="ID_1892619516" MODIFIED="1618182302487" TEXT="https://openaccess.thecvf.com/content_CVPR_2020/papers/Huang_CurricularFace_Adaptive_Curriculum_Learning_Loss_for_Deep_Face_Recognition_CVPR_2020_paper.pdf"/>
+</node>
+<node CREATED="1618182518937" ID="ID_616877884" MODIFIED="1618182521243" TEXT="CircleLoss">
+<node CREATED="1618182538127" ID="ID_1227789031" MODIFIED="1618182538860" TEXT="https://openaccess.thecvf.com/content_CVPR_2020/papers/Sun_Circle_Loss_A_Unified_Perspective_of_Pair_Similarity_Optimization_CVPR_2020_paper.pdf"/>
+</node>
 </node>
 <node CREATED="1617880149914" ID="ID_1309636820" MODIFIED="1617880153031" POSITION="right" TEXT="Augmentation">
 <node CREATED="1617880156978" ID="ID_116509750" MODIFIED="1617882956297" TEXT="Resize&#x2192;CentorCrop">
@@ -27,7 +33,9 @@
 <node CREATED="1618146999823" ID="ID_523733362" MODIFIED="1618148643523" POSITION="right" TEXT="dropout&#xff1a;BERT-CNN&#x3067;&#x5e73;&#x5747;&#x7684;&#x306b;">
 <icon BUILTIN="button_ok"/>
 </node>
-<node CREATED="1618148684458" ID="ID_1898441627" MODIFIED="1618148690062" POSITION="right" TEXT="text&#x5168;&#x90e8;&#x5c0f;&#x6587;&#x5b57;&#x306b;&#x3057;&#x3066;&#x307f;&#x308b;"/>
+<node CREATED="1618148684458" ID="ID_1898441627" MODIFIED="1618217449441" POSITION="right" TEXT="text&#x5168;&#x90e8;&#x5c0f;&#x6587;&#x5b57;&#x306b;&#x3057;&#x3066;&#x307f;&#x308b;">
+<icon BUILTIN="button_ok"/>
+</node>
 <node CREATED="1618146967775" FOLDED="true" ID="ID_1923184676" MODIFIED="1618146979128" POSITION="left" TEXT="&#x7d42;&#x308f;&#x308a;">
 <node CREATED="1617788463441" ID="ID_1906338597" MODIFIED="1617788464576" TEXT="&#x5f8c;&#x51e6;&#x7406;">
 <node CREATED="1617788467265" ID="ID_734757949" MODIFIED="1617799791026" TEXT="imagehash&#x540d;&#x5bc4;&#x305b;">
