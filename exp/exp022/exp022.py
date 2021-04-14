@@ -102,31 +102,26 @@ class Config:
             ToTensorV2(p=1.0),
     ])
 
+
 class ShopeeNet(nn.Module):
     def __init__(self,
                  config: Config,
                  bert=None,
                  pretrained: bool = True,
-                 cnn_only: bool = False,
                  num_classes=11014):
         super().__init__()
         self.config = config
-        self.cnn_only = cnn_only
-        if not cnn_only:
-            if bert is None:
-                self.bert = AutoModel.from_pretrained(config.nlp_model_name)
-            else:
-                self.bert = bert
-            self.bert_bn = nn.BatchNorm1d(self.bert.config.hidden_size)
+        if bert is None:
+            self.bert = AutoModel.from_pretrained(config.nlp_model_name)
+        else:
+            self.bert = bert
+        self.bert_bn = nn.BatchNorm1d(self.bert.config.hidden_size)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
 
-        if cnn_only:
-            n_feat_concat = self.cnn.num_features
-        else:
-            n_feat_concat = self.cnn.num_features + self.bert.config.hidden_size
+        n_feat_concat = self.cnn.num_features + self.bert.config.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -143,12 +138,11 @@ class ShopeeNet(nn.Module):
         x = self.cnn_bn(x)
         x = self.dropout_cnn(x)
 
-        if not self.cnn_only:
-            text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
-            text = self.bert_bn(text)
-            text = self.dropout_nlp(text)
+        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
+        text = self.bert_bn(text)
+        text = self.dropout_nlp(text)
 
-            x = torch.cat([x, text], dim=1)
+        x = torch.cat([x, text], dim=1)
         ret = self.fc(x)
 
         if label is not None:
@@ -341,9 +335,10 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
 
     posting_ids = np.array(df["posting_id"].values.tolist())
     distances = np.array(distances, dtype=np.float16)
+    np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
-    for th in np.arange(0, 10, 0.2).tolist() + np.arange(10, 20, 0.5).tolist() + np.arange(20, 40, 5).tolist():
+    for th in np.arange(10, 20, 0.5).tolist() + np.arange(20, 40, 5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -383,6 +378,8 @@ def main(config, fold=0):
 
     if config.debug:
         df = df.iloc[:100]
+    mlflow.start_run(experiment_id=0,
+                     run_name=os.path.basename(__file__))
 
     df_train = df[df["fold"] != fold]
     df_val = df[df["fold"] == fold]
@@ -416,87 +413,70 @@ def main(config, fold=0):
 
     device = torch.device("cuda")
 
-    def train(model, pretrain):
-        if pretrain:
-            optimizer = config.optimizer(params=[{"params": model.cnn.parameters(), "lr": config.base_lr},
-                                                 {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
-                                                 {"params": model.fc.parameters(), "lr": config.base_lr},
-                                                 {"params": model.final.parameters(), "lr": config.base_lr}])
+    model = ShopeeNet(config=config)
+    model.to("cuda")
+    optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
+                                         {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
+                                         {"params": model.cnn.parameters(), "lr": config.base_lr},
+                                         {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
+                                         {"params": model.fc.parameters(), "lr": config.base_lr},
+                                         {"params": model.final.parameters(), "lr": config.base_lr}])
+    scheduler = config.scheduler(optimizer, **config.scheduler_params)
+    criterion = config.loss(**config.loss_params)
+
+    best_score = 0
+    not_improved_epochs = 0
+    for epoch in range(config.epochs):
+        train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
+
+        valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
+        scheduler.step(score)
+
+        print(f"CV: {score}")
+        if score > best_score:
+            print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
+            best_score = score
+            torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}.pth')
+            not_improved_epochs = 0
+            mlflow.log_metric("val_best_cv_score", score)
+            df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
         else:
-            optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                                 {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
-                                                 {"params": model.cnn.parameters(), "lr": config.base_lr},
-                                                 {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
-                                                 {"params": model.fc.parameters(), "lr": config.base_lr},
-                                                 {"params": model.final.parameters(), "lr": config.base_lr}])
-        scheduler = config.scheduler(optimizer, **config.scheduler_params)
-        criterion = config.loss(**config.loss_params)
-
-        best_score = 0
-        not_improved_epochs = 0
-        mlflow.start_run(experiment_id=0,
-                         run_name=os.path.basename(__file__))
+            not_improved_epochs += 1
+            print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs, config.early_stop_round))
+            if not_improved_epochs >= config.early_stop_round:
+                print("finish training.")
+                break
         mlflow.log_param("fold", fold)
-        mlflow.log_param("pretrain_cnn", pretrain)
+        mlflow.log_metric("val_loss", valid_loss.avg)
+        mlflow.log_metric("val_cv_score", score)
+        mlflow.log_metric("val_best_threshold", best_threshold)
 
-        for epoch in range(config.epochs):
-            train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
-
-            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch,
-                                                                 output_dir)
-            scheduler.step(score)
-
-            print(f"CV: {score}")
-            if score > best_score:
-                print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
-                best_score = score
-                torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}.pth')
-                not_improved_epochs = 0
-                mlflow.log_metric("val_best_cv_score", score)
-                df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
-            else:
-                not_improved_epochs += 1
-                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs,
-                                                                                config.early_stop_round))
-                if not_improved_epochs >= config.early_stop_round:
-                    print("finish training.")
-                    break
-            mlflow.log_metric("val_loss", valid_loss.avg)
-            mlflow.log_metric("val_cv_score", score)
-            mlflow.log_metric("val_best_threshold", best_threshold)
-
-        for key, value in config.__dict__.items():
-            mlflow.log_param(key, value)
-        mlflow.end_run()
-
-    # ===================================
-    # stage 1
-    # ===================================
-    config.epochs = 3
-    model = ShopeeNet(config=config, cnn_only=True)
-    model.to("cuda")
-
-    train(model=model, pretrain=True)
-
-    cnn_pretrained = model.cnn
-
-    # ===================================
-    # stage 2
-    # ===================================
-    config.epochs = 30
-    model = ShopeeNet(config=config, cnn_only=False)
-    model.cnn = cnn_pretrained
-    model.to("cuda")
-
-    config.base_lr /= 10
-    train(model=model, pretrain=False)
+    for key, value in config.__dict__.items():
+        mlflow.log_param(key, value)
+    mlflow.end_run()
 
 
 def main_process():
-    for base_lr in [1e-3, 2e-3]:
-        cfg = Config()
-        cfg.base_lr = base_lr
-        main(cfg)
+    """
+    for batch_size in [8, 12, 16]:
+        try:
+            cfg = Config()
+            cfg.batch_size = batch_size
+            cfg.epochs = 1
+            main(cfg)
+        except Exception as e:
+            print(e)
+    """
+    for batch_size in [8, 12]:
+        try:
+            cfg = Config()
+            cfg.batch_size = batch_size
+            cfg.base_lr = cfg.base_lr / 16 * batch_size
+            cfg.bert_lr = cfg.bert_lr / 16 * batch_size
+            cfg.epochs = 1
+            main(cfg)
+        except Exception as e:
+            print(e)
 
 
 if __name__ == "__main__":

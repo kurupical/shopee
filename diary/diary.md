@@ -75,3 +75,19 @@ https://www.mindmeister.com/1844996822?e=turtle
 
 * exp019: いろんなモデル試す + アンサンブルできるようにする
 * exp020: アンサンブル実験用コード(fold同じ)
+* exp021: CNN -> BERT
+
+# 2021/4/14
+* batch_sizeがかなり学習結果に影響してそう。batch_size=8のものは軒並み精度が出ていない気がする。
+  -> LRを増やさないと学習進まない? bs=16とbs=8だったら後者がlr2倍か?小さいモデルで実験してみよう
+  -> exp022
+  
+* optimize_ensemble_v1_20210414
+  * single best: CV 0.856
+  * ensemble major: threshold 18.5 -> CV 0.8764
+  
+* exp022
+  bs [8, 12, 16] -> CV: 0.8067 - 0.8216 - 0.8271
+  bs [8, 12, 16] (lr調整:減らす) -> だめ
+  bs [8, 12, 16] (lr調整:増やす) -> CV: 0.8067 -
+  

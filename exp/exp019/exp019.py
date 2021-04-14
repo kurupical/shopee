@@ -335,6 +335,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
 
     posting_ids = np.array(df["posting_id"].values.tolist())
     distances = np.array(distances, dtype=np.float16)
+    np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
     for th in np.arange(10, 20, 0.5).tolist() + np.arange(20, 40, 5).tolist():
@@ -469,21 +470,23 @@ def main_process():
     config = Config()
     main(config)
     """
+    import mlflow
 
     model_dict = [
         # {"model": "tf_efficientnet_b4", "batch_size": 12},
+        {"model": "ecaresnet50t", "batch_size": 24},
+        {"model": "regnety_080", "batch_size": 16},
+        {"model": "vit_base_patch16_384", "batch_size": 16},
+        {"model": "vit_base_patch32_384", "batch_size": 16},
+        {"model": "ecaresnet101d", "batch_size": 12},
+        {"model": "seresnext50_32x4d", "batch_size": 16},
+        {"model": "regnety_160", "batch_size": 16},
         {"model": "tf_efficientnet_b5", "batch_size": 8},
         {"model": "tf_efficientnet_b6", "batch_size": 8},
-        {"model": "ecaresnet50t", "batch_size": 16},
-        {"model": "ecaresnet101d", "batch_size": 8},
-        {"model": "ecaresnet101d_pruned", "batch_size": 8},
-        {"model": "seresnext50_32x4d", "batch_size": 8},
-        {"model": "regnety_080", "batch_size": 16},
-        {"model": "regnety_160", "batch_size": 8},
-        {"model": "vit_base_patch16_384", "batch_size": 16},
-        {"model": "vit_base_patch32_384", "batch_size": 12},
         {"model": "vit_large_patch16_384", "batch_size": 8},
     ]
+    # {"model": "ecaresnet101d_pruned", "batch_size": 12},
+
     for model_info in model_dict:
         try:
             cfg = Config()
@@ -507,6 +510,7 @@ def main_process():
                 ])
             main(cfg)
         except Exception as e:
+            mlflow.end_run()
             print(e)
 
 if __name__ == "__main__":

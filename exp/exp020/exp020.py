@@ -78,7 +78,7 @@ class Config:
     loss_params = {}
 
     # training
-    batch_size = 12
+    batch_size = 16
     num_workers = 1
 
     epochs = 30
@@ -456,16 +456,14 @@ def main(config, fold=0):
 
 
 def main_process():
-    for model in ["bert-base-multilingual-uncased",
-                  "xlm-roberta-base",
+    for model in ["xlm-roberta-base",
+                  "bert-base-multilingual-uncased",
                   "distilbert-base-multilingual-cased",
                   "bert-base-multilingual-cased",
                   "xlm-roberta-large"]:
         try:
             cfg = Config()
             cfg.nlp_model_name = model
-            cfg.debug = True
-            cfg.epochs = 1
             if model == "xlm-roberta-large":
                 cfg.batch_size = 8
             main(cfg)
