@@ -31,6 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
+EXPERIMENT_NAME = "BN-Drouput-FC-BN-{act}"
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -48,108 +49,79 @@ def getMetric(col):
     return f1score
 
 
-@dataclasses.dataclass
-class Config:
-    # model
-    linear_out = 512
-    dropout_nlp = 0.5
-    dropout_cnn = 0.5
-    model_name = "efficientnet_b3"
-    nlp_model_name = "bert-base-multilingual-uncased"
-    bert_agg = "mean"
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2, reduce=True):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduce = reduce
 
-    # arcmargin
-    m = 0.5
-    s = 32
+    def forward(self, inputs, targets):
+        BCE_loss = F.cross_entropy(inputs, targets, reduce=False)
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1-pt)**self.gamma * BCE_loss
 
-    # dim
-    dim = (512, 512)
-
-    # optim
-    optimizer: Optimizer = Adam
-    optimizer_params = {}
-    base_lr = 5e-4
-    bert_lr = 1e-5
-
-    scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
-
-    loss = nn.CrossEntropyLoss
-    loss_params = {}
-
-    # training
-    batch_size = 12
-    num_workers = 1
-
-    epochs = 30
-    early_stop_round = 3
-
-    # debug mode
-    debug = False
-
-    # transforms
-    train_transforms = albumentations.Compose([
-            albumentations.Resize(int(dim[0] * 1.1),
-                                  int(dim[1] * 1.1), always_apply=True),
-            albumentations.CenterCrop(dim[0], dim[1], p=0.5),
-            albumentations.Resize(dim[0], dim[1], always_apply=True),
-            albumentations.Normalize(),
-            ToTensorV2(p=1.0),
-    ])
-    val_transforms = albumentations.Compose([
-            albumentations.Resize(dim[0], dim[1], always_apply=True),
-            albumentations.Normalize(),
-            ToTensorV2(p=1.0),
-    ])
+        if self.reduce:
+            return torch.mean(F_loss)
+        else:
+            return F_loss
 
 
-class ShopeeNet(nn.Module):
-    def __init__(self,
-                 config: Config,
-                 bert=None,
-                 pretrained: bool = True,
-                 num_classes=11014):
+class AdaCos(nn.Module):
+    """
+    https://github.com/4uiiurz1/pytorch-adacos/blob/master/metrics.py
+    """
+    def __init__(self, num_features, num_classes, m=0.50):
+        super(AdaCos, self).__init__()
+        self.num_features = num_features
+        self.n_classes = num_classes
+        self.s = math.sqrt(2) * math.log(num_classes - 1)
+        self.m = m
+        self.W = Parameter(torch.FloatTensor(num_classes, num_features))
+        nn.init.xavier_uniform_(self.W)
+
+    def forward(self, input, label=None):
+        # normalize features
+        x = F.normalize(input)
+        # normalize weights
+        W = F.normalize(self.W)
+        # dot product
+        logits = F.linear(x, W)
+        if label is None:
+            return logits
+        # feature re-scale
+        theta = torch.acos(torch.clamp(logits, -1.0 + 1e-7, 1.0 - 1e-7))
+        one_hot = torch.zeros_like(logits)
+        one_hot.scatter_(1, label.view(-1, 1).long(), 1)
+        with torch.no_grad():
+            B_avg = torch.where(one_hot < 1, torch.exp(self.s * logits), torch.zeros_like(logits))
+            B_avg = torch.sum(B_avg) / input.size(0)
+            # print(B_avg)
+            theta_med = torch.median(theta[one_hot == 1])
+            self.s = torch.log(B_avg) / torch.cos(torch.min(math.pi/4 * torch.ones_like(theta_med), theta_med))
+        output = self.s * logits
+
+        return output
+
+
+class ArcMarginProductSubcenter(nn.Module):
+    def __init__(self, in_features, out_features, k=3):
         super().__init__()
-        self.config = config
-        if bert is None:
-            self.bert = AutoModel.from_pretrained(config.nlp_model_name)
-        else:
-            self.bert = bert
-        self.bert_bn = nn.BatchNorm1d(self.bert.config.hidden_size)
-        self.cnn = create_model(config.model_name,
-                                pretrained=pretrained,
-                                num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
+        self.weight = nn.Parameter(torch.FloatTensor(out_features * k, in_features))
+        self.reset_parameters()
+        self.k = k
+        self.out_features = out_features
 
-        n_feat_concat = self.cnn.num_features + self.bert.config.hidden_size
-        self.fc = nn.Sequential(
-            nn.Linear(n_feat_concat, config.linear_out),
-            nn.BatchNorm1d(config.linear_out)
-        )
-        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
-        self.dropout_cnn = nn.Dropout(config.dropout_cnn)
-        self.final = ArcMarginProduct(s=config.s,
-                                      m=config.m,
-                                      in_features=config.linear_out,
-                                      out_features=num_classes)
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
 
-    def forward(self, X_image, input_ids, attention_mask, label=None):
-        x = self.cnn(X_image)
-        x = self.cnn_bn(x)
-        x = self.dropout_cnn(x)
+    def forward(self, features):
+        cosine_all = F.linear(F.normalize(features), F.normalize(self.weight))
+        cosine_all = cosine_all.view(-1, self.out_features, self.k)
+        cosine, _ = torch.max(cosine_all, dim=2)
+        return cosine
 
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
-
-        x = torch.cat([x, text], dim=1)
-        ret = self.fc(x)
-
-        if label is not None:
-            x = self.final(ret, label)
-            return x, ret
-        else:
-            return ret
 
 class ArcMarginProduct(nn.Module):
     r"""Implement of large margin arc distance: :
@@ -194,6 +166,152 @@ class ArcMarginProduct(nn.Module):
         # print(output)
 
         return output
+
+
+class Swish(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, i):
+        result = i * torch.sigmoid(i)
+        ctx.save_for_backward(i)
+        return result
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        i = ctx.saved_variables[0]
+        sigmoid_i = torch.sigmoid(i)
+        return grad_output * (sigmoid_i * (1 + i * (1 - sigmoid_i)))
+
+
+class SwishModule(nn.Module):
+    def forward(self, x):
+        return Swish.apply(x)
+
+
+@dataclasses.dataclass
+class Config:
+    # model
+    linear_out = 512
+    dropout_nlp = 0.5
+    dropout_cnn = 0.5
+    model_name = "efficientnet_b3"
+    nlp_model_name = "bert-base-multilingual-uncased"
+    bert_agg = "mean"
+
+    # arcmargin
+    m = 0.5
+    s = 32
+
+    # dim
+    dim = (512, 512)
+
+    # optim
+    optimizer: Optimizer = Adam
+    optimizer_params = {}
+    base_lr = 5e-4
+    bert_lr = 1e-5
+
+    scheduler = ReduceLROnPlateau
+    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
+
+    loss = nn.CrossEntropyLoss
+    loss_params = {}
+
+    # training
+    batch_size = 16
+    num_workers = 1
+
+    epochs = 30
+    early_stop_round = 3
+    num_classes = 11014
+
+    # metric learning
+    metric_layer = ArcMarginProduct
+    metric_layer_params = {
+        "s": 32,
+        "m": 0.5,
+        "in_features": linear_out,
+        "out_features": num_classes
+    }
+
+    # activation
+    activation = None
+
+    # debug mode
+    debug = False
+    gomi_score_threshold = 0.815
+
+    # transforms
+    train_transforms = albumentations.Compose([
+            albumentations.Resize(int(dim[0] * 1.1),
+                                  int(dim[1] * 1.1), always_apply=True),
+            albumentations.CenterCrop(dim[0], dim[1], p=0.5),
+            albumentations.Resize(dim[0], dim[1], always_apply=True),
+            albumentations.Normalize(),
+            ToTensorV2(p=1.0),
+    ])
+    val_transforms = albumentations.Compose([
+            albumentations.Resize(dim[0], dim[1], always_apply=True),
+            albumentations.Normalize(),
+            ToTensorV2(p=1.0),
+    ])
+
+
+class ShopeeNet(nn.Module):
+    def __init__(self,
+                 config: Config,
+                 bert=None,
+                 pretrained: bool = True):
+        super().__init__()
+        self.config = config
+        if bert is None:
+            self.bert = AutoModel.from_pretrained(config.nlp_model_name)
+        else:
+            self.bert = bert
+        self.bert_bn = nn.BatchNorm1d(self.bert.config.hidden_size)
+        self.cnn = create_model(config.model_name,
+                                pretrained=pretrained,
+                                num_classes=0)
+        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
+
+        n_feat_concat = self.cnn.num_features + self.bert.config.hidden_size
+        self.fc = nn.Sequential(
+            nn.Linear(n_feat_concat, config.linear_out*2),
+            nn.BatchNorm1d(config.linear_out*2)
+        )
+        self.fc2 = nn.Sequential(
+            nn.Linear(config.linear_out*2, config.linear_out),
+            nn.BatchNorm1d(config.linear_out)
+        )
+        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
+        self.dropout_cnn = nn.Dropout(config.dropout_cnn)
+        if config.activation is not None:
+            self.activation = config.activation()
+        else:
+            self.activation = None
+        self.final = config.metric_layer(**config.metric_layer_params)
+
+    def forward(self, X_image, input_ids, attention_mask, label=None):
+        x = self.cnn(X_image)
+        x = self.cnn_bn(x)
+        x = self.dropout_cnn(x)
+
+        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
+        text = self.bert_bn(text)
+        text = self.dropout_nlp(text)
+
+        x = torch.cat([x, text], dim=1)
+        x = self.fc(x)
+        if self.activation is not None:
+            x = self.activation(x)
+        ret = self.fc2(x)
+
+        if label is not None:
+            x = self.final(ret, label)
+            return x, ret
+        else:
+            return ret
+
 
 
 class ShopeeDataset(Dataset):
@@ -338,7 +456,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
-    for th in np.arange(10, 20, 0.5).tolist() + np.arange(20, 40, 5).tolist():
+    for th in np.arange(0, 10, 0.2).tolist() + np.arange(10, 22, 0.5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -379,7 +497,10 @@ def main(config, fold=0):
     if config.debug:
         df = df.iloc[:100]
     mlflow.start_run(experiment_id=0,
-                     run_name=os.path.basename(__file__))
+                     run_name=EXPERIMENT_NAME)
+    for key, value in config.__dict__.items():
+        mlflow.log_param(key, value)
+    mlflow.log_param("fold", fold)
 
     df_train = df[df["fold"] != fold]
     df_val = df[df["fold"] == fold]
@@ -446,72 +567,29 @@ def main(config, fold=0):
             if not_improved_epochs >= config.early_stop_round:
                 print("finish training.")
                 break
-        mlflow.log_param("fold", fold)
+        if best_score < config.gomi_score_threshold:
+            print("finish training(スコアダメなので打ち切り).")
+
         mlflow.log_metric("val_loss", valid_loss.avg)
         mlflow.log_metric("val_cv_score", score)
         mlflow.log_metric("val_best_threshold", best_threshold)
 
-    for key, value in config.__dict__.items():
-        mlflow.log_param(key, value)
     mlflow.end_run()
 
 
 def main_process():
-    """
-    # AdamW
-    try:
-        config = Config()
-        config.optimizer = AdamW
-        main(config)
-    except Exception as e:
-        print(f"ERROR: {e}")
 
-    # benchmark
-    config = Config()
-    main(config)
-    """
-    import mlflow
+    cfg = Config()
+    cfg.activation = nn.PReLU
+    main(cfg)
 
-    model_dict = [
-        # {"model": "tf_efficientnet_b4", "batch_size": 12},
-        # {"model": "ecaresnet50t", "batch_size": 24},
-        # {"model": "regnety_080", "batch_size": 16},
-        # {"model": "vit_base_patch16_384", "batch_size": 16},
-        # {"model": "vit_base_patch32_384", "batch_size": 16},
-        {"model": "ecaresnet101d", "batch_size": 12},
-        {"model": "seresnext50_32x4d", "batch_size": 16},
-        # {"model": "regnety_160", "batch_size": 16},
-        {"model": "tf_efficientnet_b5", "batch_size": 8},
-        {"model": "tf_efficientnet_b6", "batch_size": 8},
-        {"model": "vit_large_patch16_384", "batch_size": 8},
-    ]
-    # {"model": "ecaresnet101d_pruned", "batch_size": 12},
+    cfg = Config()
+    cfg.activation = SwishModule
+    main(cfg)
 
-    for model_info in model_dict:
-        try:
-            cfg = Config()
-            cfg.model_name = model_info["model"]
-            cfg.batch_size = model_info["batch_size"]
-            if "vit" in model_info["model"]:
-                dim = (384, 384)
-                cfg.dim = dim
-                cfg.train_transforms = albumentations.Compose([
-                    albumentations.Resize(int(dim[0] * 1.1),
-                                          int(dim[1] * 1.1), always_apply=True),
-                    albumentations.CenterCrop(dim[0], dim[1], p=0.5),
-                    albumentations.Resize(dim[0], dim[1], always_apply=True),
-                    albumentations.Normalize(),
-                    ToTensorV2(p=1.0),
-                ])
-                cfg.val_transforms = albumentations.Compose([
-                        albumentations.Resize(dim[0], dim[1], always_apply=True),
-                        albumentations.Normalize(),
-                        ToTensorV2(p=1.0),
-                ])
-            main(cfg)
-        except Exception as e:
-            mlflow.end_run()
-            print(e)
+    cfg = Config()
+    cfg.activation = nn.GELU
+    main(cfg)
 
 if __name__ == "__main__":
     main_process()

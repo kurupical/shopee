@@ -91,3 +91,43 @@ https://www.mindmeister.com/1844996822?e=turtle
   bs [8, 12, 16] (lr調整:減らす) -> だめ
   bs [8, 12, 16] (lr調整:増やす) -> CV: 0.8067 -
   
+# 2021/4/15
+ある程度実験は落ち着いたので考察。実験をどの方向に進めるか、先1週間程度決めておきたい。
+全部やってからアンサンブルする
+
+* いろんなCNNのモデル
+  金に行くんであれば、もっといいCNNモデルが必要になるのでは
+* optimizer
+  * 
+* learning_rate
+  * cosine scheduler
+* augmentation
+  これパクる: https://www.kaggle.com/c/landmark-recognition-2020/discussion/187757
+* loss
+  * focal loss
+* metric learning
+  * adacos
+  * circle loss
+  * subcenter arcface
+* ハイパラ
+  * 画像サイズ
+  * linear
+* gem pool
+  def gem(x, p=3, eps=1e-6):
+      return F.avg_pool2d(x.clamp(min=eps).pow(p), (x.size(-2), x.size(-1))).pow(1./p)
+
+* nearest neighbor: superglue
+
+* exp023: focal loss
+* exp024: metric learning (adacos, subcenter_arcface)
+* exp025: activation
+* exp026: poolingを頑張る
+  * gem
+  * gem(cnn+bert)
+  * clsトークン
+  * 最終4つのclsトークン
+
+# 2021/4/16
+* exp026: すべてのlayerのclsトークンで重み付けてアンサンブル
+* exp027: すべてのlayer + 従来通り で重み付けてアンサンブル
+* exp028: 単語ごとの平均をとる(実装勘違いしてた)

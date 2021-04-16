@@ -31,6 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
+EXPERIMENT_NAME = "another_metric_learning"
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -46,6 +47,24 @@ def getMetric(col):
         n = len( np.intersect1d(row.target,row[col]) )
         return 2*n / (len(row.target)+len(row[col]))
     return f1score
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2, reduce=True):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduce = reduce
+
+    def forward(self, inputs, targets):
+        BCE_loss = F.cross_entropy(inputs, targets, reduce=False)
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1-pt)**self.gamma * BCE_loss
+
+        if self.reduce:
+            return torch.mean(F_loss)
+        else:
+            return F_loss
 
 
 @dataclasses.dataclass
@@ -74,11 +93,11 @@ class Config:
     scheduler = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
 
-    loss = nn.CrossEntropyLoss
+    loss = FocalLoss
     loss_params = {}
 
     # training
-    batch_size = 12
+    batch_size = 16
     num_workers = 1
 
     epochs = 30
@@ -379,7 +398,10 @@ def main(config, fold=0):
     if config.debug:
         df = df.iloc[:100]
     mlflow.start_run(experiment_id=0,
-                     run_name=os.path.basename(__file__))
+                     run_name=f"{os.path.basename(__file__)}_{EXPERIMENT_NAME}")
+    for key, value in config.__dict__.items():
+        mlflow.log_param(key, value)
+    mlflow.log_param("fold", fold)
 
     df_train = df[df["fold"] != fold]
     df_val = df[df["fold"] == fold]
@@ -446,13 +468,10 @@ def main(config, fold=0):
             if not_improved_epochs >= config.early_stop_round:
                 print("finish training.")
                 break
-        mlflow.log_param("fold", fold)
         mlflow.log_metric("val_loss", valid_loss.avg)
         mlflow.log_metric("val_cv_score", score)
         mlflow.log_metric("val_best_threshold", best_threshold)
 
-    for key, value in config.__dict__.items():
-        mlflow.log_param(key, value)
     mlflow.end_run()
 
 
@@ -470,48 +489,11 @@ def main_process():
     config = Config()
     main(config)
     """
-    import mlflow
 
-    model_dict = [
-        # {"model": "tf_efficientnet_b4", "batch_size": 12},
-        # {"model": "ecaresnet50t", "batch_size": 24},
-        # {"model": "regnety_080", "batch_size": 16},
-        # {"model": "vit_base_patch16_384", "batch_size": 16},
-        # {"model": "vit_base_patch32_384", "batch_size": 16},
-        {"model": "ecaresnet101d", "batch_size": 12},
-        {"model": "seresnext50_32x4d", "batch_size": 16},
-        # {"model": "regnety_160", "batch_size": 16},
-        {"model": "tf_efficientnet_b5", "batch_size": 8},
-        {"model": "tf_efficientnet_b6", "batch_size": 8},
-        {"model": "vit_large_patch16_384", "batch_size": 8},
-    ]
-    # {"model": "ecaresnet101d_pruned", "batch_size": 12},
-
-    for model_info in model_dict:
-        try:
-            cfg = Config()
-            cfg.model_name = model_info["model"]
-            cfg.batch_size = model_info["batch_size"]
-            if "vit" in model_info["model"]:
-                dim = (384, 384)
-                cfg.dim = dim
-                cfg.train_transforms = albumentations.Compose([
-                    albumentations.Resize(int(dim[0] * 1.1),
-                                          int(dim[1] * 1.1), always_apply=True),
-                    albumentations.CenterCrop(dim[0], dim[1], p=0.5),
-                    albumentations.Resize(dim[0], dim[1], always_apply=True),
-                    albumentations.Normalize(),
-                    ToTensorV2(p=1.0),
-                ])
-                cfg.val_transforms = albumentations.Compose([
-                        albumentations.Resize(dim[0], dim[1], always_apply=True),
-                        albumentations.Normalize(),
-                        ToTensorV2(p=1.0),
-                ])
-            main(cfg)
-        except Exception as e:
-            mlflow.end_run()
-            print(e)
+    for alpha in [0.25, 1]:
+        cfg = Config()
+        cfg.loss_params = {"alpha": alpha}
+        main(cfg)
 
 if __name__ == "__main__":
     main_process()
