@@ -35,7 +35,7 @@ https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
 EXPERIMENT_NAME = "metric_learning_pair"
-DEBUG = True
+DEBUG = False
 
 def seed_torch(seed=42):
     random.seed(seed)
