@@ -130,4 +130,27 @@ https://www.mindmeister.com/1844996822?e=turtle
 # 2021/4/16
 * exp026: すべてのlayerのclsトークンで重み付けてアンサンブル
 * exp027: すべてのlayer + 従来通り で重み付けてアンサンブル
-* exp028: 単語ごとの平均をとる(実装勘違いしてた)
+* exp028: 単語ごとの平均をとる(実装勘違いしてた) -> だめ笑
+* exp029: token size = 128 -> 64 CV: 0.8574(+0.0014)
+* exp030: efficientnet_b5のgrid search(imgsize=256)
+* exp031: final layer のlr調整 -> fc1e-3, cnn1e-4だとepoch=3で 0.849(epoch=1で0.829)
+* exp031_2: final layerのlrいいやつで、bert元に戻す -> fc1e-3, cnn1e-4, epoch=1で0.830
+* exp032: bert_lrを振る -> 2.5e-5でCV: 0.837.
+  -> さらに周辺で振る -> 3e-5でCV: 0.838
+* exp033: exp032の結果でいろんなモデル流す
+  -> うーんダメ, exp032の実験は最初の1epochがよかっただけっぽい。。。
+* exp034: exp033 + bert 1e-5
+* exp035: augmentationをパクる -> CV: 0.858 (+0.002)
+* exp036: augmentation + centercrop
+* exp037: xlm_roberta_lr
+* exp038: kiccho-sanのbert4層 -> Cv: 0.8585
+* exp039: 複数fc
+* exp040: dim=(720, 720)
+* exp041: いろいろ -> cnn_lr=3e-4がよい感じなので、exp041_bestからスタート
+
+# 2021/4/19
+* exp042: gem
+* exp043: cnn/bertをそれぞれdropout
+* exp044: kiccho_san cls + dropout
+* exp045: num_linear 
+* exp046: triplet lossも加えたい

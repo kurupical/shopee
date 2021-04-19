@@ -404,9 +404,9 @@ def main(config):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.cnn.parameters(), "lr": config.base_lr},
-                                             {"params": model.fc.parameters(), "lr": config.base_lr},
-                                             {"params": model.final.parameters(), "lr": config.base_lr}])
+                                             {"params": model.cnn.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.fc.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.final.parameters(), "lr": config.cnn_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 

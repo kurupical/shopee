@@ -24,6 +24,9 @@ from datetime import datetime as dt
 import matplotlib.pyplot as plt
 import time
 from transformers import AdamW, get_linear_schedule_with_warmup
+from pytorch_metric_learning import miners, losses
+from pytorch_metric_learning.distances import LpDistance
+from pytorch_metric_learning.regularizers import LpRegularizer
 
 """
 とりあえずこれベースに頑張って写経する
@@ -31,8 +34,8 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "bert_last_layer.mean(axis=2)"
-DEBUG = False
+EXPERIMENT_NAME = "metric_learning_pair"
+DEBUG = True
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -195,6 +198,7 @@ class Config:
     linear_out = 512
     dropout_nlp = 0.5
     dropout_cnn = 0.5
+    dropout_bert_stack = 0.2
     model_name = "efficientnet_b3"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
@@ -209,8 +213,9 @@ class Config:
     # optim
     optimizer: Optimizer = Adam
     optimizer_params = {}
-    base_lr = 5e-4
+    cnn_lr = 3e-4
     bert_lr = 1e-5
+    fc_lr = 5e-4
 
     scheduler = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
@@ -220,7 +225,7 @@ class Config:
 
     # training
     batch_size = 16
-    num_workers = 1
+    num_workers = 2
 
     if DEBUG:
         epochs = 1
@@ -237,28 +242,56 @@ class Config:
         "in_features": linear_out,
         "out_features": num_classes
     }
+    metric_loss = losses.TripletMarginLoss
+    metric_loss_params = {
+        "distance": LpDistance(),
+        "embedding_regularizer": LpRegularizer()
+    }
+    miner = miners.MultiSimilarityMiner
 
     # activation
     activation = None
 
     # debug mode
     debug = DEBUG
-    gomi_score_threshold = 0.815
+    gomi_score_threshold = 0.8
 
     # transforms
     train_transforms = albumentations.Compose([
-            albumentations.Resize(int(dim[0] * 1.1),
-                                  int(dim[1] * 1.1), always_apply=True),
-            albumentations.CenterCrop(dim[0], dim[1], p=0.5),
-            albumentations.Resize(dim[0], dim[1], always_apply=True),
-            albumentations.Normalize(),
-            ToTensorV2(p=1.0),
+        albumentations.HorizontalFlip(p=0.5),
+        albumentations.ImageCompression(quality_lower=99, quality_upper=100),
+        albumentations.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=10, border_mode=0, p=0.7),
+        albumentations.Resize(dim[0], dim[1]),
+        albumentations.Cutout(max_h_size=int(dim[0] * 0.4), max_w_size=int(dim[0] * 0.4), num_holes=1, p=0.5),
+        albumentations.Normalize(),
+        ToTensorV2(p=1.0),
     ])
     val_transforms = albumentations.Compose([
             albumentations.Resize(dim[0], dim[1], always_apply=True),
             albumentations.Normalize(),
             ToTensorV2(p=1.0),
     ])
+
+
+class BertModule(nn.Module):
+    def __init__(self,
+                 bert,
+                 config: Config):
+        super().__init__()
+        if bert is None:
+            self.bert = AutoModel.from_pretrained(config.nlp_model_name)
+        else:
+            self.bert = bert
+        self.config = config
+        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
+        self.hidden_size = self.bert.config.hidden_size
+        self.bert_bn = nn.BatchNorm1d(self.hidden_size)
+
+    def forward(self, input_ids, attention_mask):
+        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=1)
+        text = self.bert_bn(text)
+        text = self.dropout_nlp(text)
+        return text
 
 
 class ShopeeNet(nn.Module):
@@ -268,52 +301,36 @@ class ShopeeNet(nn.Module):
                  pretrained: bool = True):
         super().__init__()
         self.config = config
-        if bert is None:
-            self.bert = AutoModel.from_pretrained(config.nlp_model_name)
-        else:
-            self.bert = bert
-        self.bert_bn = nn.BatchNorm1d(128)
+        self.bert = BertModule(bert=bert,
+                               config=config)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
 
-        n_feat_concat = self.cnn.num_features + 128
+        n_feat_concat = self.cnn.num_features + self.bert.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
-        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
-        if config.activation is not None:
-            self.activation = config.activation()
-        else:
-            self.activation = None
         self.final = config.metric_layer(**config.metric_layer_params)
+
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
         x = self.cnn(X_image)
         x = self.cnn_bn(x)
         x = self.dropout_cnn(x)
 
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=2)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
-
+        text = self.bert(input_ids, attention_mask)
         x = torch.cat([x, text], dim=1)
         ret = self.fc(x)
 
         if label is not None:
-            if self.activation is not None:
-                x = self.activation(ret)
-                x = self.final(x, label)
-            else:
-                x = self.final(ret, label)
+            x = self.final(ret, label)
             return x, ret
         else:
             return ret
-
-
 
 class ShopeeDataset(Dataset):
     def __init__(self, df, tokenizer, transforms=None):
@@ -359,11 +376,12 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
+def train_fn(dataloader, model, criterion, criterion_pair, miner, optimizer, device, scheduler, epoch, ):
     import mlflow
 
     model.train()
     loss_score = AverageMeter()
+    loss_score_pair = AverageMeter()
 
     tk0 = tqdm.tqdm(enumerate(dataloader), total=len(dataloader))
     for bi, d in tk0:
@@ -376,25 +394,35 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
 
         optimizer.zero_grad()
 
-        output, _ = model(images, input_ids, attention_mask, targets)
+        output, embeddings = model(images, input_ids, attention_mask, targets)
 
-        loss = criterion(output, targets)
+        loss1 = criterion(output, targets)
 
+        hard_pairs = miner(embeddings, targets)
+        loss2 = criterion_pair(output, targets, hard_pairs)
+
+        loss = loss1 + loss2
         loss.backward()
+
         optimizer.step()
 
-        loss_score.update(loss.detach().item(), batch_size)
-        tk0.set_postfix(Train_Loss=loss_score.avg, Epoch=epoch, LR=optimizer.param_groups[0]['lr'])
+        loss_score.update(loss1.detach().item(), batch_size)
+        loss_score_pair.update(loss2.detach().item(), batch_size)
+        tk0.set_postfix(Train_Loss=loss_score.avg,
+                        Train_Loss_Pair=loss_score_pair.avg,
+                        Train_lossEpoch=epoch,
+                        LR=optimizer.param_groups[0]['lr'])
 
         if scheduler.__class__ != ReduceLROnPlateau:
             scheduler.step()
         if not DEBUG:
-            mlflow.log_metric("train_loss", loss.detach().item())
+            mlflow.log_metric("train_loss_1", loss1.detach().item())
+            mlflow.log_metric("train_loss_pair", loss2.detach().item())
 
     return loss_score
 
 
-def eval_fn(data_loader, model, criterion, device, df_val, epoch, output_dir):
+def eval_fn(data_loader, model, criterion, criterion_pair, miner, device, df_val, epoch, output_dir):
     loss_score = AverageMeter()
 
     model.eval()
@@ -458,7 +486,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
-    for th in np.arange(0, 10, 0.2).tolist() + np.arange(10, 22, 0.5).tolist():
+    for th in np.arange(10, 22, 0.5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -541,20 +569,23 @@ def main(config, fold=0):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.fc.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.final.parameters(), "lr": config.cnn_lr}])
+                                             {"params": model.fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
+        criterion_pair = config.metric_loss(**config.metric_loss_params)
+        miner = config.miner()
 
         best_score = 0
         not_improved_epochs = 0
         for epoch in range(config.epochs):
-            train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
+            train_loss = train_fn(train_loader, model, criterion, criterion_pair, miner,
+                                  optimizer, device, scheduler=scheduler, epoch=epoch)
 
-            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
+            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, criterion_pair, miner,
+                                                                 device, df_val, epoch, output_dir)
             scheduler.step(score)
 
             print(f"CV: {score}")
@@ -583,14 +614,41 @@ def main(config, fold=0):
         if not DEBUG:
             mlflow.end_run()
     except Exception as e:
+        print(e)
         if not DEBUG:
-            print(e)
             mlflow.end_run()
 
-def main_process():
 
-    cfg = Config()
-    main(cfg)
+def main_process():
+    config = Config()
+    config.metric_loss_params = {}
+    main(config)
+
+    config = Config()
+    main(config)
+
+    config = Config()
+    config.metric_loss = losses.SupConLoss
+    config.metric_loss_params = {}
+    main(config)
+
+    config = Config()
+    config.metric_loss = losses.SupConLoss
+    main(config)
+
+    config = Config()
+    config.metric_loss = losses.NTXentLoss
+    config.metric_loss_params = {}
+    main(config)
+
+    config = Config()
+    config.metric_loss = losses.NTXentLoss
+    main(config)
+
+    config = Config()
+    config.metric_loss = losses.CircleLoss
+    config.metric_loss_params = {}
+    main(config)
 
 if __name__ == "__main__":
     main_process()

@@ -31,7 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "bert_last_layer.mean(axis=2)"
+EXPERIMENT_NAME = "bert_mean_text_length_64"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -195,6 +195,7 @@ class Config:
     linear_out = 512
     dropout_nlp = 0.5
     dropout_cnn = 0.5
+    dropout_bert_stack = 0.2
     model_name = "efficientnet_b3"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
@@ -272,31 +273,40 @@ class ShopeeNet(nn.Module):
             self.bert = AutoModel.from_pretrained(config.nlp_model_name)
         else:
             self.bert = bert
-        self.bert_bn = nn.BatchNorm1d(128)
+        self.bert_bn = nn.BatchNorm1d(self.bert.config.hidden_size)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
 
-        n_feat_concat = self.cnn.num_features + 128
+        n_feat_concat = self.cnn.num_features + self.bert.config.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
         self.dropout_nlp = nn.Dropout(config.dropout_nlp)
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
-        if config.activation is not None:
-            self.activation = config.activation()
-        else:
-            self.activation = None
         self.final = config.metric_layer(**config.metric_layer_params)
+
+        n_weights = self.bert.config.num_hidden_layers + 1
+        weights_init = torch.zeros(n_weights).float()
+        weights_init.data[:-1] = -3
+        self.dropout_bert_stack = nn.Dropout(config.dropout_bert_stack)
+        self.bert_layer_weights = torch.nn.Parameter(weights_init)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
         x = self.cnn(X_image)
         x = self.cnn_bn(x)
         x = self.dropout_cnn(x)
 
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=2)
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        hidden_layers = outputs[2]  # bertの各層の隠れ層
+
+        text = torch.stack(
+            [self.dropout_bert_stack(layer).mean(axis=1) for layer in hidden_layers], dim=2
+        )
+        text = (torch.softmax(self.bert_layer_weights, dim=0) * text).sum(-1)
+
         text = self.bert_bn(text)
         text = self.dropout_nlp(text)
 
@@ -304,16 +314,10 @@ class ShopeeNet(nn.Module):
         ret = self.fc(x)
 
         if label is not None:
-            if self.activation is not None:
-                x = self.activation(ret)
-                x = self.final(x, label)
-            else:
-                x = self.final(ret, label)
+            x = self.final(ret, label)
             return x, ret
         else:
             return ret
-
-
 
 class ShopeeDataset(Dataset):
     def __init__(self, df, tokenizer, transforms=None):
@@ -332,7 +336,7 @@ class ShopeeDataset(Dataset):
         image = cv2.imread(row.filepath)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        text = self.tokenizer(text, padding="max_length", max_length=128, truncation=True, return_tensors="pt")
+        text = self.tokenizer(text, padding="max_length", max_length=64, truncation=True, return_tensors="pt")
         input_ids = text["input_ids"][0]
         attention_mask = text["attention_mask"][0]
         if self.augmentations:
@@ -583,14 +587,15 @@ def main(config, fold=0):
         if not DEBUG:
             mlflow.end_run()
     except Exception as e:
+        print(e)
         if not DEBUG:
-            print(e)
             mlflow.end_run()
 
 def main_process():
-
-    cfg = Config()
-    main(cfg)
+    for dout in [0, 0.2, 0.5]:
+        cfg = Config()
+        cfg.dropout_bert_stack = dout
+        main(cfg)
 
 if __name__ == "__main__":
     main_process()

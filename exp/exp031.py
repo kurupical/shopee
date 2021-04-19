@@ -31,7 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "bert_last_layer.mean(axis=2)"
+EXPERIMENT_NAME = "different_lr"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -195,6 +195,7 @@ class Config:
     linear_out = 512
     dropout_nlp = 0.5
     dropout_cnn = 0.5
+    dropout_bert_stack = 0.2
     model_name = "efficientnet_b3"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
@@ -209,8 +210,9 @@ class Config:
     # optim
     optimizer: Optimizer = Adam
     optimizer_params = {}
-    base_lr = 5e-4
+    cnn_lr = 5e-4
     bert_lr = 1e-5
+    fc_lr = 5e-4
 
     scheduler = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
@@ -225,7 +227,7 @@ class Config:
     if DEBUG:
         epochs = 1
     else:
-        epochs = 30
+        epochs = 3
     early_stop_round = 3
     num_classes = 11014
 
@@ -261,6 +263,38 @@ class Config:
     ])
 
 
+class BertModule(nn.Module):
+    def __init__(self,
+                 bert,
+                 config: Config):
+        super().__init__()
+        if bert is None:
+            self.bert = AutoModel.from_pretrained(config.nlp_model_name)
+        else:
+            self.bert = bert
+        self.config = config
+        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
+        self.hidden_size = self.bert.config.hidden_size
+        self.bert_bn = nn.BatchNorm1d(self.hidden_size)
+
+        n_weights = self.bert.config.num_hidden_layers + 1
+        weights_init = torch.arange(n_weights).float()
+        self.dropout_bert_stack = nn.Dropout(config.dropout_bert_stack)
+        self.bert_layer_weights = torch.nn.Parameter(weights_init, requires_grad=True)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        hidden_layers = outputs[2]  # bertの各層の隠れ層
+
+        text = torch.stack(
+            [self.dropout_bert_stack(layer).mean(axis=1) for layer in hidden_layers], dim=2
+        )
+        text = (torch.softmax(self.bert_layer_weights, dim=0) * text).sum(-1)
+
+        text = self.bert_bn(text)
+        text = self.dropout_nlp(text)
+        return text
+
 class ShopeeNet(nn.Module):
     def __init__(self,
                  config: Config,
@@ -268,27 +302,19 @@ class ShopeeNet(nn.Module):
                  pretrained: bool = True):
         super().__init__()
         self.config = config
-        if bert is None:
-            self.bert = AutoModel.from_pretrained(config.nlp_model_name)
-        else:
-            self.bert = bert
-        self.bert_bn = nn.BatchNorm1d(128)
+        self.bert = BertModule(bert=bert,
+                               config=config)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
 
-        n_feat_concat = self.cnn.num_features + 128
+        n_feat_concat = self.cnn.num_features + self.bert.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
-        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
-        if config.activation is not None:
-            self.activation = config.activation()
-        else:
-            self.activation = None
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
@@ -296,24 +322,15 @@ class ShopeeNet(nn.Module):
         x = self.cnn_bn(x)
         x = self.dropout_cnn(x)
 
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=2)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
-
+        text = self.bert(input_ids, attention_mask)
         x = torch.cat([x, text], dim=1)
         ret = self.fc(x)
 
         if label is not None:
-            if self.activation is not None:
-                x = self.activation(ret)
-                x = self.final(x, label)
-            else:
-                x = self.final(ret, label)
+            x = self.final(ret, label)
             return x, ret
         else:
             return ret
-
-
 
 class ShopeeDataset(Dataset):
     def __init__(self, df, tokenizer, transforms=None):
@@ -541,11 +558,10 @@ def main(config, fold=0):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.fc.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.final.parameters(), "lr": config.cnn_lr}])
+                                             {"params": model.fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
@@ -583,14 +599,28 @@ def main(config, fold=0):
         if not DEBUG:
             mlflow.end_run()
     except Exception as e:
+        print(e)
         if not DEBUG:
-            print(e)
             mlflow.end_run()
 
 def main_process():
 
-    cfg = Config()
-    main(cfg)
+    """
+    for fc_lr in [1e-3, 7.5e-4]:
+        config = Config()
+        config.fc_lr = fc_lr
+        main(config)
+    """
+    for cnn_lr in [6e-4, 7.5e-4]:
+        config = Config()
+        config.cnn_lr = cnn_lr
+        main(config)
+
+    for cnn_lr in [1e-4, 3e-4]:
+        config = Config()
+        config.fc_lr = 1e-3
+        config.cnn_lr = cnn_lr
+        main(config)
 
 if __name__ == "__main__":
     main_process()

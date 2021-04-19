@@ -384,7 +384,7 @@ def main(config):
 
         model = ShopeeNet(config=config)
         model.to("cuda")
-        optimizer = config.optimizer(model.parameters(), lr=config.base_lr)
+        optimizer = config.optimizer(model.parameters(), lr=config.cnn_lr)
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 

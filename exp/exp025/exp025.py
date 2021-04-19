@@ -538,10 +538,10 @@ def main(config, fold=0):
     model.to("cuda")
     optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
                                          {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
-                                         {"params": model.cnn.parameters(), "lr": config.base_lr},
-                                         {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
-                                         {"params": model.fc.parameters(), "lr": config.base_lr},
-                                         {"params": model.final.parameters(), "lr": config.base_lr}])
+                                         {"params": model.cnn.parameters(), "lr": config.cnn_lr},
+                                         {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
+                                         {"params": model.fc.parameters(), "lr": config.cnn_lr},
+                                         {"params": model.final.parameters(), "lr": config.cnn_lr}])
     scheduler = config.scheduler(optimizer, **config.scheduler_params)
     criterion = config.loss(**config.loss_params)
 
@@ -569,6 +569,7 @@ def main(config, fold=0):
                 break
         if best_score < config.gomi_score_threshold:
             print("finish training(スコアダメなので打ち切り).")
+            break
 
         mlflow.log_metric("val_loss", valid_loss.avg)
         mlflow.log_metric("val_cv_score", score)
@@ -579,13 +580,13 @@ def main(config, fold=0):
 
 def main_process():
 
-    cfg = Config()
-    cfg.activation = nn.PReLU
-    main(cfg)
+    # cfg = Config()
+    # cfg.activation = nn.PReLU
+    # main(cfg)
 
-    cfg = Config()
-    cfg.activation = SwishModule
-    main(cfg)
+    # cfg = Config()
+    # cfg.activation = SwishModule
+    # main(cfg)
 
     cfg = Config()
     cfg.activation = nn.GELU

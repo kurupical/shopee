@@ -24,6 +24,7 @@ from datetime import datetime as dt
 import matplotlib.pyplot as plt
 import time
 from transformers import AdamW, get_linear_schedule_with_warmup
+from efficientnet_pytorch import EfficientNet
 
 """
 とりあえずこれベースに頑張って写経する
@@ -31,7 +32,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "bert_last_layer.mean(axis=2)"
+EXPERIMENT_NAME = "cnn search(image only)"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -195,7 +196,9 @@ class Config:
     linear_out = 512
     dropout_nlp = 0.5
     dropout_cnn = 0.5
+    dropout_bert_stack = 0.2
     model_name = "efficientnet_b3"
+    model_from = "timm"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
 
@@ -211,6 +214,7 @@ class Config:
     optimizer_params = {}
     base_lr = 5e-4
     bert_lr = 1e-5
+    fc_lr = 5e-4
 
     scheduler = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
@@ -225,7 +229,7 @@ class Config:
     if DEBUG:
         epochs = 1
     else:
-        epochs = 30
+        epochs = 1
     early_stop_round = 3
     num_classes = 11014
 
@@ -243,7 +247,7 @@ class Config:
 
     # debug mode
     debug = DEBUG
-    gomi_score_threshold = 0.815
+    gomi_score_threshold = 0.77
 
     # transforms
     train_transforms = albumentations.Compose([
@@ -272,31 +276,45 @@ class ShopeeNet(nn.Module):
             self.bert = AutoModel.from_pretrained(config.nlp_model_name)
         else:
             self.bert = bert
-        self.bert_bn = nn.BatchNorm1d(128)
-        self.cnn = create_model(config.model_name,
-                                pretrained=pretrained,
-                                num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
+        self.bert_bn = nn.BatchNorm1d(self.bert.config.hidden_size)
+        if config.model_from == "timm":
+            self.cnn = create_model(config.model_name,
+                                    pretrained=pretrained,
+                                    num_classes=0)
+            cnn_features = self.cnn.num_features
+        if config.model_from == "efficientnet_pytorch":
+            self.cnn = EfficientNet.from_pretrained(config.model_name, include_top=False)
+            cnn_features = self.cnn._bn1.num_features
+        self.cnn_bn = nn.BatchNorm1d(cnn_features)
 
-        n_feat_concat = self.cnn.num_features + 128
+        n_feat_concat = cnn_features + self.bert.config.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
         self.dropout_nlp = nn.Dropout(config.dropout_nlp)
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
-        if config.activation is not None:
-            self.activation = config.activation()
-        else:
-            self.activation = None
         self.final = config.metric_layer(**config.metric_layer_params)
 
+        n_weights = self.bert.config.num_hidden_layers + 1
+        weights_init = torch.zeros(n_weights).float()
+        weights_init.data[:-1] = -3
+        self.dropout_bert_stack = nn.Dropout(config.dropout_bert_stack)
+        self.bert_layer_weights = torch.nn.Parameter(weights_init)
+
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        x = self.cnn(X_image)
+        x = self.cnn(X_image).flatten(start_dim=1)
         x = self.cnn_bn(x)
         x = self.dropout_cnn(x)
 
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(axis=2)
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        hidden_layers = outputs[2] # bertの各層の隠れ層
+
+        text = torch.stack(
+            [self.dropout_bert_stack(layer).mean(axis=1) for layer in hidden_layers], dim=2
+        )
+        text = (torch.softmax(self.bert_layer_weights, dim=0) * text).sum(-1)
+
         text = self.bert_bn(text)
         text = self.dropout_nlp(text)
 
@@ -304,16 +322,10 @@ class ShopeeNet(nn.Module):
         ret = self.fc(x)
 
         if label is not None:
-            if self.activation is not None:
-                x = self.activation(ret)
-                x = self.final(x, label)
-            else:
-                x = self.final(ret, label)
+            x = self.final(ret, label)
             return x, ret
         else:
             return ret
-
-
 
 class ShopeeDataset(Dataset):
     def __init__(self, df, tokenizer, transforms=None):
@@ -458,7 +470,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
-    for th in np.arange(0, 10, 0.2).tolist() + np.arange(10, 22, 0.5).tolist():
+    for th in np.arange(10, 22, 0.5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -544,8 +556,8 @@ def main(config, fold=0):
                                              {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.fc.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.final.parameters(), "lr": config.cnn_lr}])
+                                             {"params": model.fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
@@ -583,14 +595,44 @@ def main(config, fold=0):
         if not DEBUG:
             mlflow.end_run()
     except Exception as e:
+        print(e)
         if not DEBUG:
-            print(e)
             mlflow.end_run()
 
 def main_process():
+    # baseline
+    """
+    config = Config()
+    config.model_from = "efficientnet_pytorch"
+    config.model_name = "efficientnet-b3"
+    main(config)
+    """
+    for lr in [1e-4, 1e-5]:
+        config = Config()
+        config.fc_lr = lr
+        config.base_lr = lr
+        config.batch_size = 8
+        config.model_from = "efficientnet_pytorch"
+        config.model_name = "efficientnet-b5"
+        main(config)
 
-    cfg = Config()
-    main(cfg)
+    for lr in [1e-4, 1e-5]:
+        config = Config()
+        config.fc_lr = lr
+        config.base_lr = lr
+        config.batch_size = 12
+        config.model_from = "efficientnet_pytorch"
+        config.model_name = "efficientnet-b4"
+        main(config)
+
+    for lr in [1e-4, 1e-5]:
+        config = Config()
+        config.fc_lr = lr
+        config.base_lr = lr
+        config.batch_size = 16
+        config.model_name = "seresnext50_32x4d"
+        main(config)
+
 
 if __name__ == "__main__":
     main_process()

@@ -31,7 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "another_metric_learning"
+EXPERIMENT_NAME = "bert_mean_all_layers"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -288,24 +288,24 @@ class ShopeeNet(nn.Module):
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = config.metric_layer(**config.metric_layer_params)
 
-        n_weights = self.bert.num_hidden_layers + 1
+        n_weights = self.bert.config.num_hidden_layers + 1
         weights_init = torch.zeros(n_weights).float()
         weights_init.data[:-1] = -3
         self.dropout_bert_stack = nn.Dropout(config.dropout_bert_stack)
-        self.bert_layer_weights = torch.nn.Parameter()
+        self.bert_layer_weights = torch.nn.Parameter(weights_init)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
         x = self.cnn(X_image)
         x = self.cnn_bn(x)
         x = self.dropout_cnn(x)
 
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)[2]
-        hidden_layers = outputs[2] # bertの各層の隠れ層
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        hidden_layers = outputs[2]  # bertの各層の隠れ層
 
         text = torch.stack(
-            [self.dropout_bert_stack(layer[:, 0, :]).mean(axis=1) for layer in hidden_layers], dim=2
+            [self.dropout_bert_stack(layer).mean(axis=1) for layer in hidden_layers], dim=2
         )
-        text = (torch.softmax(self.layer_weights, dim=0) * text).sum(-1)
+        text = (torch.softmax(self.bert_layer_weights, dim=0) * text).sum(-1)
 
         text = self.bert_bn(text)
         text = self.dropout_nlp(text)
@@ -546,10 +546,10 @@ def main(config, fold=0):
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
                                              {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
-                                             {"params": model.cnn.parameters(), "lr": config.base_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.base_lr},
-                                             {"params": model.fc.parameters(), "lr": config.base_lr},
-                                             {"params": model.final.parameters(), "lr": config.base_lr}])
+                                             {"params": model.cnn.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.fc.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.final.parameters(), "lr": config.cnn_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
@@ -587,42 +587,15 @@ def main(config, fold=0):
         if not DEBUG:
             mlflow.end_run()
     except Exception as e:
+        print(e)
         if not DEBUG:
-            print(e)
             mlflow.end_run()
 
 def main_process():
-
-    """
-    cfg = Config()
-    cfg.loss = FocalLoss
-    main(cfg)
-    # for m in [0.5, 0.3, 0.4]:
-    for m in [0.3]:
+    for dout in [0, 0.2, 0.5]:
         cfg = Config()
-        cfg.metric_layer = AdaCos
-        cfg.metric_layer_params = {"m": m, "in_features": cfg.linear_out, "out_features": cfg.num_classes}
+        cfg.dropout_bert_stack = dout
         main(cfg)
-    for k in [3, 5, 10]:
-        cfg = Config()
-        cfg.metric_layer = ArcMarginProductSubcenter
-        cfg.metric_layer_params = {"k": k, "in_features": cfg.linear_out, "out_features": cfg.num_classes}
-        main(cfg)
-
-    for m in [0.3, 0.4]:
-        cfg = Config()
-        cfg.metric_layer = ArcMarginProduct
-        cfg.metric_layer_params["m"] = m
-        main(cfg)
-    """
-
-    for s in [16, 64]:
-        cfg = Config()
-        cfg.metric_layer = ArcMarginProduct
-        cfg.metric_layer_params = cfg.metric_layer_params
-        cfg.metric_layer_params["s"] = s
-        main(cfg)
-
 
 if __name__ == "__main__":
     main_process()
