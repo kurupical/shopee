@@ -152,5 +152,13 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp042: gem
 * exp043: cnn/bertをそれぞれdropout
 * exp044: kiccho_san cls + dropout
-* exp045: num_linear 
+  * dout=0 -> CV: 0.8613
+  * dout=0.2 -> CV: 0.0.8618
+* exp045: num_linear
 * exp046: triplet lossも加えたい
+* exp047: apex使う(exp044_best + batch_size=32)
+  * torch.whereの前のところhalfにする
+  * よくわからんバグを踏んだので後回し。。。
+* exp048: transformer(すて)
+* exp049: transformer(すて)
+* exp050: bert lr=5e-4, 1e-4

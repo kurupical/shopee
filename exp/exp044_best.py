@@ -601,8 +601,7 @@ def main(config, fold=0):
             mlflow.end_run()
 
 def main_process():
-    # for dropout_stack in [0, 0.2, 0.5]:
-    for dropout_stack in [0.5]:
+    for dropout_stack in [0, 0.2, 0.5]:
         config = Config()
         config.dropout_bert_stack = dropout_stack
         main(config)

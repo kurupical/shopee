@@ -31,8 +31,9 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "kiccho-san CLS*4 dropout"
+EXPERIMENT_NAME = "num_linear_out tuning"
 DEBUG = False
+
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -601,15 +602,10 @@ def main(config, fold=0):
             mlflow.end_run()
 
 def main_process():
-    # for dropout_stack in [0, 0.2, 0.5]:
-    for dropout_stack in [0.5]:
+    for linear_out in [256, 1024, 2048]:
         config = Config()
-        config.dropout_bert_stack = dropout_stack
-        main(config)
-
-    for dropout_nlp in [0, 0.2, 0.5]:
-        config = Config()
-        config.dropout_nlp = dropout_nlp
+        config.linear_out = linear_out
+        config.metric_layer_params["in_features"] = linear_out
         main(config)
 
 

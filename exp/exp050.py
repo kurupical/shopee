@@ -31,7 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "kiccho-san CLS*4 dropout"
+EXPERIMENT_NAME = "tuning bert lr"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -601,17 +601,10 @@ def main(config, fold=0):
             mlflow.end_run()
 
 def main_process():
-    # for dropout_stack in [0, 0.2, 0.5]:
-    for dropout_stack in [0.5]:
+    for bert_lr in [1e-4, 5e-4]:
         config = Config()
-        config.dropout_bert_stack = dropout_stack
+        config.bert_lr = bert_lr
         main(config)
-
-    for dropout_nlp in [0, 0.2, 0.5]:
-        config = Config()
-        config.dropout_nlp = dropout_nlp
-        main(config)
-
 
 if __name__ == "__main__":
     main_process()

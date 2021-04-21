@@ -31,7 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "kiccho-san CLS*4 dropout"
+EXPERIMENT_NAME = "TRANSFORMER"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -196,6 +196,7 @@ class Config:
     dropout_nlp = 0.5
     dropout_cnn = 0.5
     dropout_bert_stack = 0.2
+    dropout_transformer = 0.2
     model_name = "efficientnet_b3"
     nlp_model_name = "bert-base-multilingual-uncased"
     bert_agg = "mean"
@@ -240,6 +241,11 @@ class Config:
         "out_features": num_classes
     }
 
+    # transformers
+    transformer_n_heads = 8
+    transformer_dropout = 0.2
+    transformer_num_layers = 2
+
     # activation
     activation = None
 
@@ -283,14 +289,7 @@ class BertModule(nn.Module):
         text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
 
         text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-        text = torch.sum(
-            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
-        )
-        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
         return text
-
 
 class ShopeeNet(nn.Module):
     def __init__(self,
@@ -304,9 +303,15 @@ class ShopeeNet(nn.Module):
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
+        self.cnn_fc = nn.Linear(self.cnn.num_features, 128)
 
-        n_feat_concat = self.cnn.num_features + self.bert.hidden_size
+        n_feat_concat = self.bert.hidden_size + 16 * 16  # effnetb3のH, W
+        encoder_layer = nn.TransformerEncoderLayer(d_model=n_feat_concat,
+                                                   nhead=config.transformer_n_heads,
+                                                   dropout=config.dropout_transformer)
+        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer,
+                                                 num_layers=config.transformer_num_layers)
+
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -315,12 +320,13 @@ class ShopeeNet(nn.Module):
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        x = self.cnn(X_image)
-        x = self.cnn_bn(x)
-        x = self.dropout_cnn(x)
-
+        x = self.cnn.forward_features(X_image)
+        x = self.cnn_fc(x.flatten(start_dim=2).transpose(2, 1)).transpose(2, 1)
         text = self.bert(input_ids, attention_mask)
-        x = torch.cat([x, text], dim=1)
+
+        x = torch.cat([x, text], dim=2)
+        x = self.transformer(x)
+        x = x.mean(dim=1)
         ret = self.fc(x)
 
         if label is not None:
@@ -556,7 +562,8 @@ def main(config, fold=0):
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.transformer.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
@@ -601,8 +608,7 @@ def main(config, fold=0):
             mlflow.end_run()
 
 def main_process():
-    # for dropout_stack in [0, 0.2, 0.5]:
-    for dropout_stack in [0.5]:
+    for dropout_stack in [0, 0.2, 0.5]:
         config = Config()
         config.dropout_bert_stack = dropout_stack
         main(config)

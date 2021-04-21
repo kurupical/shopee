@@ -426,8 +426,9 @@ def eval_fn(data_loader, model, criterion, device, df_val, epoch, output_dir):
             attention_mask = d[2].to(device)
             targets = d[3].to(device)
 
-            output, feature = model(images, input_ids, attention_mask, targets)
-            loss = criterion(output, targets)
+            with torch.cuda.amp.autocast():
+                output, feature = model(images, input_ids, attention_mask, targets)
+                loss = criterion(output, targets)
 
             loss_score.update(loss.detach().item(), batch_size)
             tk0.set_postfix(Eval_Loss=loss_score.avg)
