@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import time
 from transformers import AdamW, get_linear_schedule_with_warmup
 
+
 """
 とりあえずこれベースに頑張って写経する
 https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-images
@@ -291,6 +292,14 @@ class BertModule(nn.Module):
 
         text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
         return text
+
+def _get_activation_fn(activation):
+    if activation == "relu":
+        return F.relu
+    elif activation == "gelu":
+        return F.gelu
+
+    raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
 
 class ShopeeNet(nn.Module):
     def __init__(self,

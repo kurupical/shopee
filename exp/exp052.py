@@ -31,7 +31,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "TRANSFORMER"
+EXPERIMENT_NAME = "transformer_normal_concat"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -281,7 +281,6 @@ class BertModule(nn.Module):
         else:
             self.bert = bert
         self.config = config
-        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
         self.hidden_size = self.bert.config.hidden_size
         self.bert_bn = nn.BatchNorm1d(self.hidden_size)
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
@@ -301,13 +300,16 @@ class ShopeeNet(nn.Module):
         self.config = config
         self.bert = BertModule(bert=bert,
                                config=config)
+        self.bert_bn = nn.BatchNorm1d(self.bert.hidden_size)
+        self.dropout_nlp = nn.Dropout(config.dropout_nlp)
+
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_fc = nn.Linear(16*16, self.bert.hidden_size)
         self.cnn_fc_dropout = nn.Dropout(config.dropout_cnn_fc)
 
-        n_feat_concat = self.bert.hidden_size
+        n_feat_concat = self.bert.hidden_size * 2 + self.cnn.num_features
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.bert.hidden_size,
                                                    nhead=config.transformer_n_heads,
                                                    dropout=config.dropout_transformer)
@@ -322,14 +324,24 @@ class ShopeeNet(nn.Module):
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        x = self.cnn.forward_features(X_image)
-        x = self.cnn_fc(x.flatten(start_dim=2))
-        x = self.cnn_fc_dropout(x)
+        img = self.cnn.forward_features(X_image)
         text = self.bert(input_ids, attention_mask)
 
-        x = torch.cat([F.normalize(text), F.normalize(x)], dim=1)
-        x = self.transformer(x)
-        x = x.mean(dim=1)
+        img_transformer = self.cnn_fc(img.flatten(start_dim=2))
+        img_transformer = self.cnn_fc_dropout(img_transformer)
+        x_transformer = torch.cat([F.normalize(text), F.normalize(img_transformer)], dim=1)
+        x_transformer = self.transformer(x_transformer)
+        x_transformer = x_transformer.mean(dim=1)
+
+        img_normal = img.mean(dim=(2, 3))
+        text = torch.sum(
+            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
+        )
+        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
+        text = self.bert_bn(text)
+        text = self.dropout_nlp(text)
+
+        x = torch.cat([x_transformer, img_normal, text], dim=1)
         ret = self.fc(x)
 
         if label is not None:
@@ -564,6 +576,7 @@ def main(config, fold=0):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
+                                             {"params": model.bert_bn.parameters(), "lr": config.bert_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.transformer.parameters(), "lr": config.fc_lr},

@@ -162,3 +162,15 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp048: transformer(すて)
 * exp049: transformer(すて)
 * exp050: bert lr=5e-4, 1e-4
+
+# 2021/4/21
+* exp051_2: bert+transformer CV: 0.8790!!!!
+  * http://localhost:8888/notebooks/optimize_ensemble_v4_20210421.ipynb
+   -> CV: 0.9005(今までの4model ensemble: CV: 0.886x)
+* exp052: exp051_2 と従来方式のconcat
+
+# 2021/4/22
+* exp057: model 作り直し(cosine annealing)
+* exp058: transformer(channel方向)
+
+* exp054_4: exp054 transformerのinputを直した -> だめ

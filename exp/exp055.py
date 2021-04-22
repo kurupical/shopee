@@ -24,15 +24,24 @@ from datetime import datetime as dt
 import matplotlib.pyplot as plt
 import time
 from transformers import AdamW, get_linear_schedule_with_warmup
+from typing import Tuple, List, Any, Dict
 
 """
 とりあえずこれベースに頑張って写経する
 https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-images
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
+import argparse
 
-EXPERIMENT_NAME = "TRANSFORMER"
-DEBUG = False
+parser = argparse.ArgumentParser()
+parser.add_argument("-debug", action="store_true")
+args = parser.parse_args()
+if args.debug is None:
+    DEBUG = True
+else:
+    DEBUG = args.debug
+
+EXPERIMENT_NAME = "transformer_linear_out_tune"
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -192,49 +201,50 @@ class SwishModule(nn.Module):
 @dataclasses.dataclass
 class Config:
     # model
-    linear_out = 512
-    dropout_nlp = 0.5
-    dropout_cnn = 0.5
-    dropout_bert_stack = 0.2
-    dropout_transformer = 0.2
-    dropout_cnn_fc = 0
-    model_name = "efficientnet_b3"
-    nlp_model_name = "bert-base-multilingual-uncased"
-    bert_agg = "mean"
+    linear_out: int = 512
+    dropout_nlp: float = 0.5
+    dropout_cnn: float = 0.5
+    dropout_bert_stack: float = 0.2
+    dropout_transformer: float = 0.2
+    dropout_cnn_fc: float = 0
+    model_name: str = "efficientnet_b3"
+    nlp_model_name: str = "bert-base-multilingual-uncased"
+    bert_agg: str = "mean"
 
     # arcmargin
-    m = 0.5
-    s = 32
+    m: float = 0.5
+    s: float = 32
 
     # dim
-    dim = (512, 512)
+    dim: Tuple[int, int] = (512, 512)
 
     # optim
-    optimizer: Optimizer = Adam
+    optimizer: Any = Adam
     optimizer_params = {}
-    cnn_lr = 3e-4
-    bert_lr = 1e-5
-    fc_lr = 5e-4
+    cnn_lr: float = 3e-4
+    bert_lr: float = 1e-5
+    fc_lr: float = 5e-4
+    transformer_lr: float = 5e-4
 
-    scheduler = ReduceLROnPlateau
+    scheduler: Any = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
 
-    loss = nn.CrossEntropyLoss
+    loss: Any = nn.CrossEntropyLoss
     loss_params = {}
 
     # training
-    batch_size = 16
-    num_workers = 2
+    batch_size: int = 16
+    num_workers: int = 2
 
     if DEBUG:
-        epochs = 1
+        epochs: int = 1
     else:
-        epochs = 30
-    early_stop_round = 3
-    num_classes = 11014
+        epochs: int = 30
+    early_stop_round: int = 3
+    num_classes: int = 11014
 
     # metric learning
-    metric_layer = ArcMarginProduct
+    metric_layer: Any = ArcMarginProduct
     metric_layer_params = {
         "s": 32,
         "m": 0.5,
@@ -243,19 +253,19 @@ class Config:
     }
 
     # transformers
-    transformer_n_heads = 64
-    transformer_dropout = 0
-    transformer_num_layers = 1
+    transformer_n_heads: int = 64
+    transformer_dropout: float = 0
+    transformer_num_layers: int = 1
 
     # activation
-    activation = None
+    activation: Any = None
 
     # debug mode
-    debug = DEBUG
-    gomi_score_threshold = 0
+    debug: bool = DEBUG
+    gomi_score_threshold: float = 0
 
     # transforms
-    train_transforms = albumentations.Compose([
+    train_transforms: Any = albumentations.Compose([
         albumentations.HorizontalFlip(p=0.5),
         albumentations.ImageCompression(quality_lower=99, quality_upper=100),
         albumentations.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=10, border_mode=0, p=0.7),
@@ -264,7 +274,7 @@ class Config:
         albumentations.Normalize(),
         ToTensorV2(p=1.0),
     ])
-    val_transforms = albumentations.Compose([
+    val_transforms: Any = albumentations.Compose([
             albumentations.Resize(dim[0], dim[1], always_apply=True),
             albumentations.Normalize(),
             ToTensorV2(p=1.0),
@@ -411,8 +421,8 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
 
         if scheduler.__class__ != ReduceLROnPlateau:
             scheduler.step()
-        if not DEBUG:
-            mlflow.log_metric("train_loss", loss.detach().item())
+        # if not DEBUG:
+        #     mlflow.log_metric("train_loss", loss.detach().item())
 
     return loss_score
 
@@ -502,6 +512,8 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
 
 def main(config, fold=0):
     import mlflow
+    mlflow.set_tracking_uri("http://34.121.203.133:5000")  # kiccho_san mlflow
+
     try:
         seed_torch(19900222)
         output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
@@ -523,7 +535,7 @@ def main(config, fold=0):
         if DEBUG:
             df = df.iloc[:100]
         if not DEBUG:
-            mlflow.start_run(experiment_id=0,
+            mlflow.start_run(experiment_id=7,
                              run_name=EXPERIMENT_NAME)
             for key, value in config.__dict__.items():
                 mlflow.log_param(key, value)
@@ -566,7 +578,7 @@ def main(config, fold=0):
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
-                                             {"params": model.transformer.parameters(), "lr": config.fc_lr},
+                                             {"params": model.transformer.parameters(), "lr": config.transformer_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
@@ -612,10 +624,12 @@ def main(config, fold=0):
             mlflow.end_run()
 
 def main_process():
-    for dropout_cnn_fc in [0]:
+    for linear_out in [256, 1024, 2048]:
         config = Config()
-        config.dropout_cnn_fc = dropout_cnn_fc
+        config.linear_out = linear_out
+        config.metric_layer_params["in_features"] = linear_out
         main(config)
+
 
 if __name__ == "__main__":
     main_process()
