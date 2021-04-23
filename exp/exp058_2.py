@@ -216,7 +216,7 @@ class Config:
     cnn_lr: float = 3e-4
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
-    transformer_lr: float = 1e-3
+    transformer_lr: float = 1e-5
 
     scheduler = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
@@ -616,11 +616,12 @@ def main(config, fold=0):
             mlflow.end_run()
 
 def main_process():
+    """
     for transformer_lr in [1e-4, 1e-5]:
         config = Config()
         config.transformer_lr = transformer_lr
         main(config)
-
+    """
     for dropout_transformer in [0.1, 0.2]:
         config = Config()
         config.dropout_transformer = dropout_transformer
@@ -629,6 +630,11 @@ def main_process():
     for dropout_cnn_fc in [0.2]:
         config = Config()
         config.dropout_cnn_fc = dropout_cnn_fc
+        main(config)
+
+    for n_heads in [16, 32]:
+        config = Config()
+        config.transformer_n_heads = n_heads
         main(config)
 
 if __name__ == "__main__":

@@ -217,7 +217,7 @@ class Config:
     cnn_lr: float = 3e-4
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
-    transformer_lr: float = 1e-5
+    transformer_lr: float = 1e-4
 
     scheduler = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
@@ -232,7 +232,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 30
+        epochs: int = 2
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -288,10 +288,24 @@ class BertModule(nn.Module):
         self.bert_bn = nn.BatchNorm1d(self.hidden_size)
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
-    def forward(self, input_ids, attention_mask):
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
+    def forward(self, input_ids, image_embeddings, attention_mask):
+
+        text_embeddings = self.bert.embeddings(input_ids=input_ids)
+        input_embeddings = torch.cat([text_embeddings, image_embeddings], dim=1)
+
+        attention_mask = torch.cat([torch.ones(len(input_ids), image_embeddings.shape[1]).cuda(),
+                                    attention_mask], dim=1)
+        text = self.bert(inputs_embeds=input_embeddings,
+                         attention_mask=attention_mask,
+                         output_hidden_states=True)[2]
 
         text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
+        text = torch.sum(
+            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
+        )
+        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
+        text = self.bert_bn(text)
+        text = self.dropout_nlp(text)
         return text
 
 class ShopeeNet(nn.Module):
@@ -306,8 +320,10 @@ class ShopeeNet(nn.Module):
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_fc = nn.Linear(16*16, self.bert.hidden_size)
-        self.cnn_fc_dropout = nn.Dropout(config.dropout_cnn_fc)
+        self.cnn_fc = nn.Sequential(
+            nn.Linear(self.cnn.num_features, self.bert.hidden_size),
+            nn.Dropout(config.dropout_cnn_fc)
+        )
 
         n_feat_concat = self.bert.hidden_size
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.bert.hidden_size,
@@ -325,13 +341,10 @@ class ShopeeNet(nn.Module):
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
         x = self.cnn.forward_features(X_image)
-        x = self.cnn_fc(x.flatten(start_dim=2))
-        x = self.cnn_fc_dropout(x)
-        text = self.bert(input_ids, attention_mask)
-
-        x = torch.cat([F.normalize(text), F.normalize(x)], dim=1)
-        x = self.transformer(x.permute(1, 0, 2)).permute(1, 0, 2)
-        x = x.mean(dim=1)
+        x = self.cnn_fc(x.flatten(start_dim=2).transpose(2, 1))
+        x = self.bert(input_ids=input_ids,
+                      image_embeddings=x,
+                      attention_mask=attention_mask)
         ret = self.fc(x)
 
         if label is not None:
@@ -506,7 +519,7 @@ def main(config, fold=0):
     import mlflow
     mlflow.set_tracking_uri("http://34.121.203.133:5000")  # kiccho_san mlflow
 
-    try:
+    if True:
         seed_torch(19900222)
         output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
         os.makedirs(output_dir)
@@ -610,30 +623,17 @@ def main(config, fold=0):
 
         if not DEBUG:
             mlflow.end_run()
-    except Exception as e:
+    else:
+    # except Exception as e:
         print(e)
         if not DEBUG:
             mlflow.end_run()
 
+
 def main_process():
-    for dropout_cnn_fc in [0.2, 0.5, 0.75]:
-        config = Config()
-        config.dropout_cnn_fc = dropout_cnn_fc
-        main(config)
+    config = Config()
+    main(config)
 
-    for dropout_transformer in [0, 0.1, 0.5]:
-        config = Config()
-        config.dropout_transformer = dropout_transformer
-        main(config)
 
-    for n_heads in [16, 32]:
-        config = Config()
-        config.transformer_n_heads = n_heads
-        main(config)
-
-    for n_layer in [2, 3, 4]:
-        config = Config()
-        config.transformer_num_layers = n_layer
-        main(config)
 if __name__ == "__main__":
     main_process()

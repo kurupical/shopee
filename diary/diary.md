@@ -174,3 +174,8 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp058: transformer(channel方向)
 
 * exp054_4: exp054 transformerのinputを直した -> だめ
+
+# 2021/4/23
+* exp060: all_dataで学習させる(exp044_best)
+* exp059: bertに突っ込むタイプの構造; LR=1e-3, 1e-4で振る(epochs=2)
+* exp054_4: LR=1e-3,1e-4で振る

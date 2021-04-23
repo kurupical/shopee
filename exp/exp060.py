@@ -24,17 +24,16 @@ from datetime import datetime as dt
 import matplotlib.pyplot as plt
 import time
 from transformers import AdamW, get_linear_schedule_with_warmup
-from typing import Tuple, List, Any, Dict
+from typing import Tuple, List, Any
 
 """
 とりあえずこれベースに頑張って写経する
 https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-images
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
-import argparse
 
+EXPERIMENT_NAME = "exp060: train_all_model(exp044_best)"
 DEBUG = False
-EXPERIMENT_NAME = "transformer_tune"
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -217,23 +216,22 @@ class Config:
     cnn_lr: float = 3e-4
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
-    transformer_lr: float = 1e-5
+    transformer_lr: float = 1e-3
 
-    scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
+    scheduler: Any = StepLR
+    scheduler_params = {"step_size": 1600*6, "gamma": 0.1}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
 
     # training
-    batch_size: int = 12
+    batch_size: int = 16
     num_workers: int = 2
 
     if DEBUG:
-        epochs: int = 1
+        epochs: int = 8
     else:
         epochs: int = 30
-    early_stop_round: int = 3
     num_classes: int = 11014
 
     # metric learning
@@ -246,7 +244,8 @@ class Config:
     }
 
     # transformers
-    transformer_n_heads: int = 8
+    transformer_n_heads: int = 64
+    transformer_dropout: float = 0
     transformer_num_layers: int = 1
 
     # activation
@@ -254,7 +253,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0
+    gomi_score_threshold: float = 0.7
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -271,7 +270,6 @@ class Config:
             albumentations.Normalize(),
             ToTensorV2(p=1.0),
     ])
-
 
 class BertModule(nn.Module):
     def __init__(self,
@@ -292,7 +290,14 @@ class BertModule(nn.Module):
         text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
 
         text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
+        text = torch.sum(
+            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
+        )
+        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
+        text = self.bert_bn(text)
+        text = self.dropout_nlp(text)
         return text
+
 
 class ShopeeNet(nn.Module):
     def __init__(self,
@@ -306,16 +311,9 @@ class ShopeeNet(nn.Module):
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_fc = nn.Linear(16*16, self.bert.hidden_size)
-        self.cnn_fc_dropout = nn.Dropout(config.dropout_cnn_fc)
+        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
 
-        n_feat_concat = self.bert.hidden_size
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.bert.hidden_size,
-                                                   nhead=config.transformer_n_heads,
-                                                   dropout=config.dropout_transformer)
-        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer,
-                                                 num_layers=config.transformer_num_layers)
-
+        n_feat_concat = self.cnn.num_features + self.bert.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -324,14 +322,12 @@ class ShopeeNet(nn.Module):
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        x = self.cnn.forward_features(X_image)
-        x = self.cnn_fc(x.flatten(start_dim=2))
-        x = self.cnn_fc_dropout(x)
-        text = self.bert(input_ids, attention_mask)
+        x = self.cnn(X_image)
+        x = self.cnn_bn(x)
+        x = self.dropout_cnn(x)
 
-        x = torch.cat([F.normalize(text), F.normalize(x)], dim=1)
-        x = self.transformer(x.permute(1, 0, 2)).permute(1, 0, 2)
-        x = x.mean(dim=1)
+        text = self.bert(input_ids, attention_mask)
+        x = torch.cat([x, text], dim=1)
         ret = self.fc(x)
 
         if label is not None:
@@ -483,7 +479,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
-    for th in np.arange(10, 30, 0.5).tolist():
+    for th in np.arange(10, 22, 0.5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -533,17 +529,12 @@ def main(config, fold=0):
                 mlflow.log_param(key, value)
             mlflow.log_param("fold", fold)
 
-        df_train = df[df["fold"] != fold]
-        df_val = df[df["fold"] == fold]
         # df_train = df[df["label_group"] % 5 != 0]
         # df_val = df[df["label_group"] % 5 == 0]
 
-        train_dataset = ShopeeDataset(df=df_train,
+        train_dataset = ShopeeDataset(df=df,
                                       transforms=config.train_transforms,
                                       tokenizer=tokenizer)
-        val_dataset = ShopeeDataset(df=df_val,
-                                    transforms=config.val_transforms,
-                                    tokenizer=tokenizer)
 
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -554,59 +545,23 @@ def main(config, fold=0):
             num_workers=config.num_workers
         )
 
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=config.batch_size,
-            num_workers=config.num_workers,
-            shuffle=False,
-            pin_memory=True,
-            drop_last=False,
-        )
-
         device = torch.device("cuda")
 
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
-                                             {"params": model.transformer.parameters(), "lr": config.transformer_lr},
+                                             {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
-        best_score = 0
-        not_improved_epochs = 0
         for epoch in range(config.epochs):
             train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
 
-            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
-            scheduler.step(score)
-
-            print(f"CV: {score}")
-            if score > best_score:
-                print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
-                best_score = score
-                torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}.pth')
-                not_improved_epochs = 0
-                if not DEBUG:
-                    mlflow.log_metric("val_best_cv_score", score)
-                    mlflow.log_metric("best_epoch", epoch)
-                df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
-            else:
-                not_improved_epochs += 1
-                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs, config.early_stop_round))
-                if not_improved_epochs >= config.early_stop_round:
-                    print("finish training.")
-                    break
-            if best_score < config.gomi_score_threshold:
-                print("finish training(スコアダメなので打ち切り).")
-                break
-            if not DEBUG:
-                mlflow.log_metric("val_loss", valid_loss.avg)
-                mlflow.log_metric("val_cv_score", score)
-                mlflow.log_metric("val_best_threshold", best_threshold)
+            mlflow.log_metric("train_loss", train_loss.avg)
+            torch.save(model.state_dict(), f'{output_dir}/model_{epoch}.pth')
 
         if not DEBUG:
             mlflow.end_run()
@@ -616,24 +571,8 @@ def main(config, fold=0):
             mlflow.end_run()
 
 def main_process():
-    for dropout_cnn_fc in [0.2, 0.5, 0.75]:
-        config = Config()
-        config.dropout_cnn_fc = dropout_cnn_fc
-        main(config)
+    cfg = Config()
+    main(cfg)
 
-    for dropout_transformer in [0, 0.1, 0.5]:
-        config = Config()
-        config.dropout_transformer = dropout_transformer
-        main(config)
-
-    for n_heads in [16, 32]:
-        config = Config()
-        config.transformer_n_heads = n_heads
-        main(config)
-
-    for n_layer in [2, 3, 4]:
-        config = Config()
-        config.transformer_num_layers = n_layer
-        main(config)
 if __name__ == "__main__":
     main_process()
