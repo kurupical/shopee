@@ -32,7 +32,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "exp060: train_all_model(exp044_best)"
+EXPERIMENT_NAME = "progressive learning(256-384-512)"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -170,6 +170,24 @@ class ArcMarginProduct(nn.Module):
         return output
 
 
+def get_train_transformers(dim):
+    return albumentations.Compose([
+        albumentations.HorizontalFlip(p=0.5),
+        albumentations.ImageCompression(quality_lower=99, quality_upper=100),
+        albumentations.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=10, border_mode=0, p=0.7),
+        albumentations.Resize(dim, dim),
+        albumentations.Cutout(max_h_size=int(dim * 0.4), max_w_size=int(dim * 0.4), num_holes=1, p=0.5),
+        albumentations.Normalize(),
+        ToTensorV2(p=1.0),
+    ])
+
+def get_val_transformers(dim):
+    return albumentations.Compose([
+        albumentations.Resize(dim, dim, always_apply=True),
+        albumentations.Normalize(),
+        ToTensorV2(p=1.0),
+    ])
+
 class Swish(torch.autograd.Function):
 
     @staticmethod
@@ -218,8 +236,8 @@ class Config:
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler: Any = StepLR
-    scheduler_params = {"step_size": 1600*6, "gamma": 0.1}
+    scheduler = ReduceLROnPlateau
+    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -229,9 +247,10 @@ class Config:
     num_workers: int = 2
 
     if DEBUG:
-        epochs: int = 1
+        epochs: int = 3
     else:
-        epochs: int = 8
+        epochs: int = 9
+    early_stop_round: int = 3
     num_classes: int = 11014
 
     # metric learning
@@ -244,7 +263,8 @@ class Config:
     }
 
     # transformers
-    transformer_n_heads: int = 8
+    transformer_n_heads: int = 64
+    transformer_dropout: float = 0
     transformer_num_layers: int = 1
 
     # activation
@@ -252,23 +272,19 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.7
+    gomi_score_threshold: float = 0
 
     # transforms
-    train_transforms: Any = albumentations.Compose([
-        albumentations.HorizontalFlip(p=0.5),
-        albumentations.ImageCompression(quality_lower=99, quality_upper=100),
-        albumentations.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=10, border_mode=0, p=0.7),
-        albumentations.Resize(dim[0], dim[1]),
-        albumentations.Cutout(max_h_size=int(dim[0] * 0.4), max_w_size=int(dim[0] * 0.4), num_holes=1, p=0.5),
-        albumentations.Normalize(),
-        ToTensorV2(p=1.0),
-    ])
-    val_transforms: Any = albumentations.Compose([
-            albumentations.Resize(dim[0], dim[1], always_apply=True),
-            albumentations.Normalize(),
-            ToTensorV2(p=1.0),
-    ])
+    train_transforms: Any = get_train_transformers(dim=dim[0])
+    val_transforms: Any = get_val_transformers(dim=dim[0])
+
+    # progressive learning scheduler
+    if DEBUG:
+        progressive_learning_epoch_span = 1
+    else:
+        progressive_learning_epoch_span = 3
+    progressive_learning_epoch_imgsize = [256, 384, 512]
+
 
 class BertModule(nn.Module):
     def __init__(self,
@@ -358,7 +374,6 @@ class ShopeeDataset(Dataset):
         if self.augmentations:
             augmented = self.augmentations(image=image)
             image = augmented['image']
-
         return image, input_ids, attention_mask, torch.tensor(row.label_group)
 
 
@@ -528,12 +543,17 @@ def main(config, fold=0):
                 mlflow.log_param(key, value)
             mlflow.log_param("fold", fold)
 
+        df_train = df[df["fold"] != fold]
+        df_val = df[df["fold"] == fold]
         # df_train = df[df["label_group"] % 5 != 0]
         # df_val = df[df["label_group"] % 5 == 0]
 
-        train_dataset = ShopeeDataset(df=df,
+        train_dataset = ShopeeDataset(df=df_train,
                                       transforms=config.train_transforms,
                                       tokenizer=tokenizer)
+        val_dataset = ShopeeDataset(df=df_val,
+                                    transforms=config.val_transforms,
+                                    tokenizer=tokenizer)
 
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -542,6 +562,15 @@ def main(config, fold=0):
             pin_memory=True,
             drop_last=True,
             num_workers=config.num_workers
+        )
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
         )
 
         device = torch.device("cuda")
@@ -556,11 +585,39 @@ def main(config, fold=0):
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
+        best_score = 0
+        not_improved_epochs = 0
         for epoch in range(config.epochs):
+            dim = config.progressive_learning_epoch_imgsize[epoch // config.progressive_learning_epoch_span]
+            train_dataset.augmentations = get_train_transformers(dim=dim)
+            val_dataset.augmentations = get_val_transformers(dim=dim)
             train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
 
-            mlflow.log_metric("train_loss", train_loss.avg)
-            torch.save(model.state_dict(), f'{output_dir}/model_{epoch}.pth')
+            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
+            scheduler.step(score)
+
+            print(f"CV: {score}")
+            if score > best_score:
+                print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
+                best_score = score
+                torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}.pth')
+                not_improved_epochs = 0
+                if not DEBUG:
+                    mlflow.log_metric("val_best_cv_score", score)
+                df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
+            else:
+                not_improved_epochs += 1
+                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs, config.early_stop_round))
+                if not_improved_epochs >= config.early_stop_round:
+                    print("finish training.")
+                    break
+            if best_score < config.gomi_score_threshold:
+                print("finish training(スコアダメなので打ち切り).")
+                break
+            if not DEBUG:
+                mlflow.log_metric("val_loss", valid_loss.avg)
+                mlflow.log_metric("val_cv_score", score)
+                mlflow.log_metric("val_best_threshold", best_threshold)
 
         if not DEBUG:
             mlflow.end_run()

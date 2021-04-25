@@ -25,6 +25,8 @@ import matplotlib.pyplot as plt
 import time
 from transformers import AdamW, get_linear_schedule_with_warmup
 from typing import Tuple, List, Any
+import re
+from pytorch_metric_learning import miners, losses
 
 """
 とりあえずこれベースに頑張って写経する
@@ -32,8 +34,8 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "exp060: train_all_model(exp044_best)"
-DEBUG = False
+EXPERIMENT_NAME = "triplet_loss(stock past embeddings)"
+DEBUG = True
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -218,8 +220,8 @@ class Config:
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler: Any = StepLR
-    scheduler_params = {"step_size": 1600*6, "gamma": 0.1}
+    scheduler = ReduceLROnPlateau
+    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -231,7 +233,8 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 8
+        epochs: int = 30
+    early_stop_round: int = 3
     num_classes: int = 11014
 
     # metric learning
@@ -242,9 +245,14 @@ class Config:
         "in_features": linear_out,
         "out_features": num_classes
     }
+    metric_loss: Any = losses.TripletMarginLoss
+    metric_loss_params = {}
+    miner: Any = miners.TripletMarginMiner
+
 
     # transformers
-    transformer_n_heads: int = 8
+    transformer_n_heads: int = 64
+    transformer_dropout: float = 0
     transformer_num_layers: int = 1
 
     # activation
@@ -286,13 +294,7 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
-
-        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-        text = torch.sum(
-            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
-        )
-        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
+        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
         text = self.bert_bn(text)
         text = self.dropout_nlp(text)
         return text
@@ -307,12 +309,14 @@ class ShopeeNet(nn.Module):
         self.config = config
         self.bert = BertModule(bert=bert,
                                config=config)
+        self.bert_fc = nn.Linear(self.bert.hidden_size, config.linear_out)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
+        self.cnn_fc = nn.Linear(self.cnn.num_features, config.linear_out)
 
-        n_feat_concat = self.cnn.num_features + self.bert.hidden_size
+        n_feat_concat = config.linear_out*2
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -321,19 +325,22 @@ class ShopeeNet(nn.Module):
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        x = self.cnn(X_image)
-        x = self.cnn_bn(x)
-        x = self.dropout_cnn(x)
+        img = self.cnn(X_image)
+        img = self.cnn_bn(img)
+        img = self.dropout_cnn(img)
+        img = self.cnn_fc(img)
 
         text = self.bert(input_ids, attention_mask)
-        x = torch.cat([x, text], dim=1)
+        text = self.bert_fc(text)
+        x = torch.cat([img, text], dim=1)
         ret = self.fc(x)
 
         if label is not None:
             x = self.final(ret, label)
-            return x, ret
+            return x, img, text, ret
         else:
             return ret
+
 
 class ShopeeDataset(Dataset):
     def __init__(self, df, tokenizer, transforms=None):
@@ -379,13 +386,18 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
+
+
+def train_fn(dataloader, model, criterion, criterion_pair, miner, optimizer, device, scheduler, epoch, ):
     import mlflow
 
     model.train()
     loss_score = AverageMeter()
 
     tk0 = tqdm.tqdm(enumerate(dataloader), total=len(dataloader))
+
+    past_embs = []
+    past_targets = []
     for bi, d in tk0:
         batch_size = d[0].shape[0]
 
@@ -396,14 +408,26 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
 
         optimizer.zero_grad()
 
-        output, _ = model(images, input_ids, attention_mask, targets)
+        output, _, _, _ = model(images, input_ids, attention_mask, targets)
 
-        loss = criterion(output, targets)
+        loss1 = criterion(output, targets)
 
-        loss.backward()
+        past_embs.append(output)
+        past_targets.append(targets)
+
+        past_embs = past_embs[:500]
+        past_targets = past_targets[:500]
+
+        hard_pairs = miner(embeddings=output,
+                           labels=targets,)
+
+        loss2 = criterion_pair(output, targets, hard_pairs)
+
+        loss1.backward(retain_graph=True)
+        loss2.backward()
         optimizer.step()
 
-        loss_score.update(loss.detach().item(), batch_size)
+        loss_score.update(loss1.detach().item(), batch_size)
         tk0.set_postfix(Train_Loss=loss_score.avg, Epoch=epoch, LR=optimizer.param_groups[0]['lr'])
 
         if scheduler.__class__ != ReduceLROnPlateau:
@@ -431,7 +455,7 @@ def eval_fn(data_loader, model, criterion, device, df_val, epoch, output_dir):
             attention_mask = d[2].to(device)
             targets = d[3].to(device)
 
-            output, feature = model(images, input_ids, attention_mask, targets)
+            output, img, text, feature = model(images, input_ids, attention_mask, targets)
 
             loss = criterion(output, targets)
 
@@ -528,12 +552,17 @@ def main(config, fold=0):
                 mlflow.log_param(key, value)
             mlflow.log_param("fold", fold)
 
+        df_train = df[df["fold"] != fold]
+        df_val = df[df["fold"] == fold]
         # df_train = df[df["label_group"] % 5 != 0]
         # df_val = df[df["label_group"] % 5 == 0]
 
-        train_dataset = ShopeeDataset(df=df,
+        train_dataset = ShopeeDataset(df=df_train,
                                       transforms=config.train_transforms,
                                       tokenizer=tokenizer)
+        val_dataset = ShopeeDataset(df=df_val,
+                                    transforms=config.val_transforms,
+                                    tokenizer=tokenizer)
 
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -544,23 +573,62 @@ def main(config, fold=0):
             num_workers=config.num_workers
         )
 
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
+        )
+
         device = torch.device("cuda")
 
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
+                                             {"params": model.bert_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.cnn_bn.parameters(), "lr": config.fc_lr},
+                                             {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
+        criterion_pair = config.metric_loss(**config.metric_loss_params)
+        miner = config.miner()
 
+        best_score = 0
+        not_improved_epochs = 0
         for epoch in range(config.epochs):
-            train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
+            train_loss = train_fn(train_loader, model, criterion, criterion_pair, miner,
+                                  optimizer, device, scheduler=scheduler, epoch=epoch)
 
-            mlflow.log_metric("train_loss", train_loss.avg)
-            torch.save(model.state_dict(), f'{output_dir}/model_{epoch}.pth')
+            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
+            scheduler.step(score)
+
+            print(f"CV: {score}")
+            if score > best_score:
+                print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
+                best_score = score
+                torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}.pth')
+                not_improved_epochs = 0
+                if not DEBUG:
+                    mlflow.log_metric("val_best_cv_score", score)
+                df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
+            else:
+                not_improved_epochs += 1
+                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs, config.early_stop_round))
+                if not_improved_epochs >= config.early_stop_round:
+                    print("finish training.")
+                    break
+            if best_score < config.gomi_score_threshold:
+                print("finish training(スコアダメなので打ち切り).")
+                break
+            if not DEBUG:
+                mlflow.log_metric("val_loss", valid_loss.avg)
+                mlflow.log_metric("val_cv_score", score)
+                mlflow.log_metric("val_best_threshold", best_threshold)
 
         if not DEBUG:
             mlflow.end_run()
@@ -568,6 +636,7 @@ def main(config, fold=0):
         print(e)
         if not DEBUG:
             mlflow.end_run()
+
 
 def main_process():
     cfg = Config()

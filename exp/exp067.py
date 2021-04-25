@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import time
 from transformers import AdamW, get_linear_schedule_with_warmup
 from typing import Tuple, List, Any
+import re
 
 """
 とりあえずこれベースに頑張って写経する
@@ -32,7 +33,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "exp060: train_all_model(exp044_best)"
+EXPERIMENT_NAME = "title_number_to_str"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -218,8 +219,8 @@ class Config:
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler: Any = StepLR
-    scheduler_params = {"step_size": 1600*6, "gamma": 0.1}
+    scheduler = ReduceLROnPlateau
+    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -231,7 +232,8 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 8
+        epochs: int = 30
+    early_stop_round: int = 3
     num_classes: int = 11014
 
     # metric learning
@@ -244,7 +246,8 @@ class Config:
     }
 
     # transformers
-    transformer_n_heads: int = 8
+    transformer_n_heads: int = 64
+    transformer_dropout: float = 0
     transformer_num_layers: int = 1
 
     # activation
@@ -252,7 +255,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.7
+    gomi_score_threshold: float = 0
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -286,13 +289,7 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
-
-        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-        text = torch.sum(
-            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
-        )
-        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
+        text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
         text = self.bert_bn(text)
         text = self.dropout_nlp(text)
         return text
@@ -334,6 +331,69 @@ class ShopeeNet(nn.Module):
             return x, ret
         else:
             return ret
+
+
+def num_to_str(n):
+    a = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    b = ["ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+    c = ["eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+
+    # 1000の位の計算
+    dd = n // 1000
+
+    # 100の位の計算(nを100で割った整数を求める)
+    d = n // 100
+    # 10の位の計算(nからd * 100の値を引いた数を10で割った整数を求める)
+    e = (n - d * 100) // 10
+    # 1の位の計算(nからd * 100の値を引いた数を10で割った余りを求める)
+    f = (n - d * 100) % 10
+
+    if dd >= 1:
+        return str(n)
+
+    if n >= 11 and n <= 19:  # nが11~19の数かを調べる
+        return c[n - 11]
+    elif d == 0:  # 100の位があるか調べる
+        if e == 0:  # 10の位があるか調べる
+            return a[f - 1]
+        elif f == 0:  # 1の位があるか調べる
+            return b[e - 1]
+        else:
+            return b[e - 1] + "-" + a[f - 1]
+    elif e == 0:
+        if f == 0:
+            return a[d - 1] + " hundred"
+        else:
+            return a[d - 1] + " hundred and " + a[f - 1]
+    else:
+        if f == 0:
+            return a[d - 1] + " hundred and " + b[e - 1]
+        else:
+            return a[d - 1] + " hundred and " + b[e - 1] + "-" + a[f - 1]
+
+
+def title_number_to_str(df):
+    regex = re.compile('\d+')
+    title = df['title']
+
+    for row in range(len(title)):
+        text = title[row]
+        odds = []
+
+        for line in text.splitlines():
+            match = regex.findall(line)
+
+            for i in match:
+                num_str = num_to_str(int(i))
+                odds.append(num_str)
+
+            for j, k in zip(match, odds):
+                title[row] = df['title'][row].replace(j, k)
+
+    df['title'] = title
+
+    return df
+
 
 class ShopeeDataset(Dataset):
     def __init__(self, df, tokenizer, transforms=None):
@@ -377,6 +437,8 @@ class AverageMeter(object):
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+
+
 
 
 def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
@@ -510,6 +572,7 @@ def main(config, fold=0):
         df = pd.read_csv("input/shopee-product-matching/train_fold.csv")
 
         df["title"] = [x.lower() for x in df["title"].values]
+        df = title_number_to_str(df)
         df["filepath"] = df['image'].apply(lambda x: os.path.join('input/shopee-product-matching/', 'train_images', x))
         label_encoder = LabelEncoder()
         df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
@@ -528,12 +591,17 @@ def main(config, fold=0):
                 mlflow.log_param(key, value)
             mlflow.log_param("fold", fold)
 
+        df_train = df[df["fold"] != fold]
+        df_val = df[df["fold"] == fold]
         # df_train = df[df["label_group"] % 5 != 0]
         # df_val = df[df["label_group"] % 5 == 0]
 
-        train_dataset = ShopeeDataset(df=df,
+        train_dataset = ShopeeDataset(df=df_train,
                                       transforms=config.train_transforms,
                                       tokenizer=tokenizer)
+        val_dataset = ShopeeDataset(df=df_val,
+                                    transforms=config.val_transforms,
+                                    tokenizer=tokenizer)
 
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -542,6 +610,15 @@ def main(config, fold=0):
             pin_memory=True,
             drop_last=True,
             num_workers=config.num_workers
+        )
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
         )
 
         device = torch.device("cuda")
@@ -556,11 +633,36 @@ def main(config, fold=0):
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
+        best_score = 0
+        not_improved_epochs = 0
         for epoch in range(config.epochs):
             train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
 
-            mlflow.log_metric("train_loss", train_loss.avg)
-            torch.save(model.state_dict(), f'{output_dir}/model_{epoch}.pth')
+            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
+            scheduler.step(score)
+
+            print(f"CV: {score}")
+            if score > best_score:
+                print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
+                best_score = score
+                torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}.pth')
+                not_improved_epochs = 0
+                if not DEBUG:
+                    mlflow.log_metric("val_best_cv_score", score)
+                df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
+            else:
+                not_improved_epochs += 1
+                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs, config.early_stop_round))
+                if not_improved_epochs >= config.early_stop_round:
+                    print("finish training.")
+                    break
+            if best_score < config.gomi_score_threshold:
+                print("finish training(スコアダメなので打ち切り).")
+                break
+            if not DEBUG:
+                mlflow.log_metric("val_loss", valid_loss.avg)
+                mlflow.log_metric("val_cv_score", score)
+                mlflow.log_metric("val_best_threshold", best_threshold)
 
         if not DEBUG:
             mlflow.end_run()
@@ -569,9 +671,11 @@ def main(config, fold=0):
         if not DEBUG:
             mlflow.end_run()
 
+
 def main_process():
     cfg = Config()
     main(cfg)
+
 
 if __name__ == "__main__":
     main_process()

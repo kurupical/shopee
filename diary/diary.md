@@ -179,3 +179,26 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp060: all_dataで学習させる(exp044_best)
 * exp059: bertに突っ込むタイプの構造; LR=1e-3, 1e-4で振る(epochs=2)
 * exp054_4: LR=1e-3,1e-4で振る
+
+* exp061: pre-training
+* exp062: pre-training(full batchsize)
+
+# 2021/4/24
+* exp065: progressive learning(3epoch)
+* exp066: progressive learning(2epoch)
+* exp067: number_to_str
+* exp068: transformer(n_layer=2)
+* exp069: image-textのペアもlossに加えてみる
+  
+# 2021/4/25
+* exp070: text, image単体でも
+* exp071: ぼつ
+* exp072: progressive learning(1epoch)
+
+* exp073: bert+distilbert
+* exp074: cnn_modelをdistilbertで振る
+
+* exp075: half data. (for threshold search)
+* exp076: transformer:
+  like https://github.com/DylanCope/Image-Captioning-with-Bimodal-Transformers
+  

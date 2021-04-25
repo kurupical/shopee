@@ -32,7 +32,7 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "exp060: train_all_model(exp044_best)"
+EXPERIMENT_NAME = "exp062: pre_training_fullbatchsize"
 DEBUG = False
 
 def seed_torch(seed=42):
@@ -218,20 +218,23 @@ class Config:
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler: Any = StepLR
-    scheduler_params = {"step_size": 1600*6, "gamma": 0.1}
+    scheduler = ReduceLROnPlateau
+    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
 
     # training
-    batch_size: int = 16
+    batch_size_nlp: int = 128
+    batch_size_cnn: int = 24
+    batch_size_final: int = 16
     num_workers: int = 2
 
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 8
+        epochs: int = 30
+    early_stop_round: int = 2
     num_classes: int = 11014
 
     # metric learning
@@ -244,7 +247,8 @@ class Config:
     }
 
     # transformers
-    transformer_n_heads: int = 8
+    transformer_n_heads: int = 64
+    transformer_dropout: float = 0
     transformer_num_layers: int = 1
 
     # activation
@@ -252,7 +256,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.7
+    gomi_score_threshold: float = 0.6
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -269,6 +273,7 @@ class Config:
             albumentations.Normalize(),
             ToTensorV2(p=1.0),
     ])
+
 
 class BertModule(nn.Module):
     def __init__(self,
@@ -298,21 +303,19 @@ class BertModule(nn.Module):
         return text
 
 
-class ShopeeNet(nn.Module):
+class ShopeeCNNNet(nn.Module):
     def __init__(self,
                  config: Config,
                  bert=None,
                  pretrained: bool = True):
         super().__init__()
         self.config = config
-        self.bert = BertModule(bert=bert,
-                               config=config)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
 
-        n_feat_concat = self.cnn.num_features + self.bert.hidden_size
+        n_feat_concat = self.cnn.num_features
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -324,8 +327,64 @@ class ShopeeNet(nn.Module):
         x = self.cnn(X_image)
         x = self.cnn_bn(x)
         x = self.dropout_cnn(x)
+        ret = self.fc(x)
 
-        text = self.bert(input_ids, attention_mask)
+        if label is not None:
+            x = self.final(ret, label)
+            return x, ret
+        else:
+            return ret
+
+
+class ShopeeNLPNet(nn.Module):
+    def __init__(self,
+                 config: Config,
+                 bert=None,
+                 pretrained: bool = True):
+        super().__init__()
+        self.config = config
+        self.bert = BertModule(bert=bert,
+                               config=config)
+
+        n_feat_concat = self.bert.hidden_size
+        self.fc = nn.Sequential(
+            nn.Linear(n_feat_concat, config.linear_out),
+            nn.BatchNorm1d(config.linear_out)
+        )
+        self.final = config.metric_layer(**config.metric_layer_params)
+
+    def forward(self, X_image, input_ids, attention_mask, label=None):
+        x = self.bert(input_ids, attention_mask)
+        ret = self.fc(x)
+
+        if label is not None:
+            x = self.final(ret, label)
+            return x, ret
+        else:
+            return ret
+
+
+class ShopeeNet(nn.Module):
+    def __init__(self,
+                 config: Config,
+                 bert=None,
+                 pretrained: bool = True):
+        super().__init__()
+        self.config = config
+        self.nlp_module = ShopeeNLPNet(bert=bert,
+                                       config=config)
+        self.cnn_module = ShopeeCNNNet(bert=bert,
+                                       config=config)
+        self.fc = nn.Sequential(
+            nn.Linear(config.linear_out*2, config.linear_out),
+            nn.BatchNorm1d(config.linear_out)
+        )
+        self.dropout_cnn = nn.Dropout(config.dropout_cnn)
+        self.final = config.metric_layer(**config.metric_layer_params)
+
+    def forward(self, X_image, input_ids, attention_mask, label=None):
+        x = self.cnn_module(X_image, input_ids, attention_mask)
+        text = self.nlp_module(X_image, input_ids, attention_mask)
         x = torch.cat([x, text], dim=1)
         ret = self.fc(x)
 
@@ -408,8 +467,6 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch):
 
         if scheduler.__class__ != ReduceLROnPlateau:
             scheduler.step()
-        # if not DEBUG:
-        #     mlflow.log_metric("train_loss", loss.detach().item())
 
     return loss_score
 
@@ -478,7 +535,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
-    for th in np.arange(10, 22, 0.5).tolist():
+    for th in np.arange(0, 22, 0.5):
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -496,11 +553,68 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
 
     return best_score, best_th, df_best
 
+def train(config,
+          train_loader,
+          val_loader,
+          model,
+          criterion,
+          optimizer,
+          device,
+          df_val,
+          output_dir,
+          scheduler,
+          fold,
+          model_name):
+    import mlflow
+    best_score = 0
+    not_improved_epochs = 0
+    if not DEBUG:
+        mlflow.start_run(experiment_id=7,
+                         run_name=f"{EXPERIMENT_NAME}_{model_name}")
+        for key, value in config.__dict__.items():
+            mlflow.log_param(key, value)
+        mlflow.log_param("fold", fold)
+
+    for epoch in range(config.epochs):
+        train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
+
+        valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch,
+                                                             output_dir)
+        scheduler.step(score)
+
+        print(f"CV: {score}")
+        if score > best_score:
+            print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
+            best_score = score
+            torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}_{model_name}.pth')
+            not_improved_epochs = 0
+            if not DEBUG:
+                mlflow.log_metric("val_best_cv_score", score)
+            df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
+        else:
+            not_improved_epochs += 1
+            print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs,
+                                                                            config.early_stop_round))
+            if not_improved_epochs >= config.early_stop_round:
+                print("finish training.")
+                break
+        if best_score < config.gomi_score_threshold:
+            print("finish training(スコアダメなので打ち切り).")
+            break
+        if not DEBUG:
+            mlflow.log_metric("val_loss", valid_loss.avg)
+            mlflow.log_metric("val_cv_score", score)
+            mlflow.log_metric("val_best_threshold", best_threshold)
+
+    if not DEBUG:
+        mlflow.end_run()
+
+    return model
 
 def main(config, fold=0):
     import mlflow
-    mlflow.set_tracking_uri("http://34.121.203.133:5000")  # kiccho_san mlflow
-
+    if not DEBUG:
+        mlflow.set_tracking_uri("http://34.121.203.133:5000")  # kiccho_san mlflow
     try:
         seed_torch(19900222)
         output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
@@ -515,63 +629,164 @@ def main(config, fold=0):
         df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
 
         if config.debug:
-            df = df.iloc[:100]
+            df = df.iloc[:300]
 
         tokenizer = AutoTokenizer.from_pretrained(config.nlp_model_name)
 
-        if DEBUG:
-            df = df.iloc[:100]
-        if not DEBUG:
-            mlflow.start_run(experiment_id=7,
-                             run_name=EXPERIMENT_NAME)
-            for key, value in config.__dict__.items():
-                mlflow.log_param(key, value)
-            mlflow.log_param("fold", fold)
-
+        df_train = df[df["fold"] != fold]
+        df_val = df[df["fold"] == fold]
         # df_train = df[df["label_group"] % 5 != 0]
         # df_val = df[df["label_group"] % 5 == 0]
 
-        train_dataset = ShopeeDataset(df=df,
+        train_dataset = ShopeeDataset(df=df_train,
                                       transforms=config.train_transforms,
                                       tokenizer=tokenizer)
+        val_dataset = ShopeeDataset(df=df_val,
+                                    transforms=config.val_transforms,
+                                    tokenizer=tokenizer)
 
+        device = torch.device("cuda")
+
+        # =====================
+        # NLP
+        # =====================
+        model = ShopeeNLPNet(config=config)
+        model.to("cuda")
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
-            batch_size=config.batch_size,
+            batch_size=config.batch_size_nlp,
             shuffle=True,
             pin_memory=True,
             drop_last=True,
             num_workers=config.num_workers
         )
 
-        device = torch.device("cuda")
-
-        model = ShopeeNet(config=config)
-        model.to("cuda")
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=config.batch_size_nlp,
+            num_workers=config.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
+        )
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.cnn.parameters(), "lr": config.cnn_lr},
+                                             # {"params": model.cnn.parameters(), "lr": config.cnn_lr},
+                                             # {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.final.parameters(), "lr": config.fc_lr}])
+        scheduler = config.scheduler(optimizer, **config.scheduler_params)
+        criterion = config.loss(**config.loss_params)
+
+        train(config=config,
+              train_loader=train_loader,
+              val_loader=val_loader,
+              model=model,
+              criterion=criterion,
+              optimizer=optimizer,
+              device=device,
+              df_val=df_val,
+              output_dir=output_dir,
+              scheduler=scheduler,
+              fold=fold,
+              model_name="nlp")
+
+        # =====================
+        # CNN
+        # =====================
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=config.batch_size_cnn,
+            shuffle=True,
+            pin_memory=True,
+            drop_last=True,
+            num_workers=config.num_workers
+        )
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=config.batch_size_cnn,
+            num_workers=config.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+        model = ShopeeCNNNet(config=config)
+        model.to("cuda")
+        optimizer = config.optimizer(params=[{"params": model.cnn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.cnn_bn.parameters(), "lr": config.cnn_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.final.parameters(), "lr": config.fc_lr}])
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
-        for epoch in range(config.epochs):
-            train_loss = train_fn(train_loader, model, criterion, optimizer, device, scheduler=scheduler, epoch=epoch)
+        train(config=config,
+              train_loader=train_loader,
+              val_loader=val_loader,
+              model=model,
+              criterion=criterion,
+              optimizer=optimizer,
+              device=device,
+              df_val=df_val,
+              output_dir=output_dir,
+              scheduler=scheduler,
+              fold=fold,
+              model_name="cnn")
 
-            mlflow.log_metric("train_loss", train_loss.avg)
-            torch.save(model.state_dict(), f'{output_dir}/model_{epoch}.pth')
+        # =====================
+        # FINAL_MODEL
+        # =====================
+        model = ShopeeNet(config=config)
+        model.cnn_module.load_state_dict(torch.load(f"{output_dir}/best_fold{fold}_cnn.pth"))
+        model.nlp_module.load_state_dict(torch.load(f"{output_dir}/best_fold{fold}_nlp.pth"))
+        model.to("cuda")
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=config.batch_size_final,
+            shuffle=True,
+            pin_memory=True,
+            drop_last=True,
+            num_workers=config.num_workers
+        )
 
-        if not DEBUG:
-            mlflow.end_run()
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=config.batch_size_final,
+            num_workers=config.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
+        )
+        optimizer = config.optimizer(params=[{"params": model.nlp_module.parameters(), "lr": config.bert_lr},
+                                             {"params": model.cnn_module.parameters(), "lr": config.cnn_lr},
+                                             {"params": model.fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.final.parameters(), "lr": config.fc_lr}])
+        scheduler = config.scheduler(optimizer, **config.scheduler_params)
+        criterion = config.loss(**config.loss_params)
+
+        train(config=config,
+              train_loader=train_loader,
+              val_loader=val_loader,
+              model=model,
+              criterion=criterion,
+              optimizer=optimizer,
+              device=device,
+              df_val=df_val,
+              output_dir=output_dir,
+              scheduler=scheduler,
+              fold=fold,
+              model_name="final")
+
+
     except Exception as e:
         print(e)
         if not DEBUG:
             mlflow.end_run()
 
 def main_process():
-    cfg = Config()
-    main(cfg)
+    config = Config()
+    main(config)
+
 
 if __name__ == "__main__":
     main_process()
