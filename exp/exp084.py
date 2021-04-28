@@ -311,6 +311,7 @@ class ShopeeNet(nn.Module):
                                 pretrained=pretrained,
                                 num_classes=0)
         self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
+        self.cnn_fc = nn.Linear(self.cnn.num_features, config.linear_out)
 
         n_feat_concat = config.linear_out*2
         self.fc = nn.Sequential(
@@ -320,13 +321,13 @@ class ShopeeNet(nn.Module):
 
         self.fc_cnn_out = nn.Sequential(
             nn.Dropout(config.dropout_cnn),
-            nn.Linear(config.linear_out, config.linear_out//2),
-            nn.BatchNorm1d(config.linear_out//2)
+            nn.Linear(config.linear_out, config.linear_out),
+            nn.BatchNorm1d(config.linear_out)
         )
         self.fc_text_out = nn.Sequential(
             nn.Dropout(config.dropout_nlp),
-            nn.Linear(config.linear_out, config.linear_out//2),
-            nn.BatchNorm1d(config.linear_out//2)
+            nn.Linear(config.linear_out, config.linear_out),
+            nn.BatchNorm1d(config.linear_out)
         )
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = config.metric_layer(**config.metric_layer_params)
