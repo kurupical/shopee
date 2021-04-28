@@ -26,7 +26,6 @@ import time
 from transformers import AdamW, get_linear_schedule_with_warmup
 from typing import Tuple, List, Any
 import re
-from pytorch_metric_learning import miners, losses
 
 """
 とりあえずこれベースに頑張って写経する

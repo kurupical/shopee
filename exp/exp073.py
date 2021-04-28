@@ -539,8 +539,7 @@ def main(config, fold=0):
     import mlflow
     mlflow.set_tracking_uri("http://34.121.203.133:5000")  # kiccho_san mlflow
 
-    if True:
-#    try:
+    try:
         seed_torch(19900222)
         output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
         os.makedirs(output_dir)
@@ -646,8 +645,7 @@ def main(config, fold=0):
 
         if not DEBUG:
             mlflow.end_run()
-    else:
-#    except Exception as e:
+    except Exception as e:
         print(e)
         if not DEBUG:
             mlflow.end_run()

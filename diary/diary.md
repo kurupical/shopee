@@ -201,4 +201,21 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp075: half data. (for threshold search)
 * exp076: transformer:
   like https://github.com/DylanCope/Image-Captioning-with-Bimodal-Transformers
-  
+
+# 2021/4/26  
+* exp077: bert
+* exp078: cnn(maxpool + avgpool)
+
+数値_ml は違うものだと認識させたいよね～
+![img_6.png](img_6.png)
+
+# 2021/4/27
+* exp074_2: distilbertでs, mを振る(ちゃんとふれてなかった)
+* exp080: linear_outをふる
+* exp081:
+* exp083: decoder も試したい(途中であきらめ)
+
+# 2021/4/28
+* exp074_3: distribert + linear_out2048
+* exp080_2: linear_outさらに上に振る
+* exp084: linear_out2048 + text, img はfc加える

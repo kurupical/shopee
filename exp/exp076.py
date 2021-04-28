@@ -231,7 +231,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 30
+        epochs: int = 10
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -618,7 +618,7 @@ def main(config, fold=0):
 
 def main_process():
 
-    for transformer_lr in [1e-4, 5e-5]:
+    for transformer_lr in [1e-3, 1e-4, 5e-5]:
         config = Config()
         config.transformer_lr = transformer_lr
         main(config)
