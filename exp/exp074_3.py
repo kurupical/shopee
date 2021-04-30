@@ -32,8 +32,8 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "distilbert+cnn"
-DEBUG = True
+EXPERIMENT_NAME = "distilbert+cnn linear_out=2048"
+DEBUG = False
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -474,7 +474,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     np.save(f"{output_dir}/embeddings_epoch{epoch}.npy", embeddings)
     np.save(f"{output_dir}/distances_epoch{epoch}.npy", distances)
     np.save(f"{output_dir}/indices_epoch{epoch}.npy", indices)
-    for th in np.arange(10, 22, 0.5).tolist():
+    for th in np.arange(15, 40, 0.5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
@@ -610,19 +610,6 @@ def main_process():
     cfg = Config()
     main(cfg)
 
-    for s in [16, 48]:
-        cfg = Config()
-        cfg.metric_layer_params["s"] = s
-        cfg.s = s
-        cfg.nlp_model_name = nlp_model
-        main(cfg)
-
-    for m in [0, 0.25]:
-        cfg = Config()
-        cfg.metric_layer_params["m"] = m
-        cfg.m = m
-        cfg.nlp_model_name = nlp_model
-        main(cfg)
 
 if __name__ == "__main__":
     main_process()

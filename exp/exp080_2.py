@@ -509,7 +509,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
 
     posting_ids = np.array(df["posting_id"].values.tolist())
     distances = np.array(distances, dtype=np.float16)
-    for th in np.arange(50, 100, 2).tolist():
+    for th in np.arange(30, 100, 2).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]

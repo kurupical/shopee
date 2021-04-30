@@ -68,7 +68,7 @@ class Config:
     # optim
     optimizer: Optimizer = Adam
     optimizer_params = {}
-    base_lr = 5e-4
+    cnn_lr = 5e-4
     bert_lr = 1e-5
 
     scheduler = ReduceLROnPlateau
@@ -477,13 +477,13 @@ def main_process():
         # {"model": "ecaresnet50t", "batch_size": 24},
         # {"model": "regnety_080", "batch_size": 16},
         # {"model": "vit_base_patch16_384", "batch_size": 16},
-        # {"model": "vit_base_patch32_384", "batch_size": 16},
-        {"model": "ecaresnet101d", "batch_size": 12},
-        {"model": "seresnext50_32x4d", "batch_size": 16},
+        {"model": "vit_base_patch32_384", "batch_size": 16},
+        # {"model": "ecaresnet101d", "batch_size": 12},
+        # {"model": "seresnext50_32x4d", "batch_size": 16},
         # {"model": "regnety_160", "batch_size": 16},
-        {"model": "tf_efficientnet_b5", "batch_size": 8},
-        {"model": "tf_efficientnet_b6", "batch_size": 8},
-        {"model": "vit_large_patch16_384", "batch_size": 8},
+        # {"model": "tf_efficientnet_b5", "batch_size": 8},
+        # {"model": "tf_efficientnet_b6", "batch_size": 8},
+        # {"model": "vit_large_patch16_384", "batch_size": 8},
     ]
     # {"model": "ecaresnet101d_pruned", "batch_size": 12},
 

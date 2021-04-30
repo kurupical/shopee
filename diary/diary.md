@@ -219,3 +219,17 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp074_3: distribert + linear_out2048
 * exp080_2: linear_outさらに上に振る
 * exp084: linear_out2048 + text, img はfc加える
+  1model-3出力, 1modelだけで試してみたんですが
+  ・concat best: CV 0.881(th=0.55)
+  ・concat-image-text best?: CV: 0.8838(concat_th=0.5, image_th=0.6, bert_th=0.7)
+  と+3ptでした。枝分かれさせた方が0.6ptくらい向上幅ありました！
+* exp085: transformer + s/m調整
+
+# 2021/4/29
+* exp086: exp074_3 + exp084(3loss, text/imgはfc, linear_out=2048)
+* exp086_2: s/m条件ふり
+* exp084_2: linear_out2048 + 4層平均(入れ忘れた) -> 没
+
+* exp090: 
+* exp091:
+  228*228でいろいろ試す

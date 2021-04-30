@@ -34,8 +34,8 @@ https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-image
 https://www.kaggle.com/zzy990106/b0-bert-cv0-9
 """
 
-EXPERIMENT_NAME = "arcface_3loss + linearout振る"
-DEBUG = True
+EXPERIMENT_NAME = "linear_out2048 + img/text_fc"
+DEBUG = False
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -523,7 +523,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
 
     posting_ids = np.array(df["posting_id"].values.tolist())
     distances = np.array(distances, dtype=np.float16)
-    for th in np.arange(30, 70, 2).tolist():
+    for th in np.arange(15, 40, 0.5).tolist():
         preds = []
         for i in range(len(distances)):
             IDX = np.where(distances[i,] < th)[0]
