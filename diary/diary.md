@@ -230,6 +230,39 @@ https://www.mindmeister.com/1844996822?e=turtle
 * exp086_2: s/m条件ふり
 * exp084_2: linear_out2048 + 4層平均(入れ忘れた) -> 没
 
+# 2021/4/30
 * exp090: 
 * exp091:
   228*228でいろいろ試す
+  
+* ensemble_v20:
+  * 以下4modelで、通常ensembleと4model ensembleの差を見たい
+    * swin_base_patch4_window7_224 
+    * vit_base_patch16_384 
+    * swin_base_patch4_window12_384
+    * swin_large_patch4_window7_224
+  * all_embeddings only -> CV: 0.8888(th=0.56)
+  * 12model -> CV: 0.8935(+4.7pt/th=0.5/0.75/0.75)
+  
+* exp092: exp091 + eff_v3 + transformer
+
+# 2021/5/1
+* ensemble_v22:
+  * original CV: 0.8895(cv=0.53)
+
+# 2021/5/2``
+* カフェで頭整理した。。。。（頭が死んでた）
+
+* exp094でmを振った結果, m=0.2がいいっぽい(epochs=2まで)
+http://34.121.203.133:5000/#/metric/val_cv_score?runs=[%223ec191c81ec64b98a586e0adbf44cf81%22,%22792ecd1e413f4349ae349e75712d2667%22,%224d48fb3684de48cfad791e21f9d2e5e0%22,%2265b527e44a52465c819d3ba4fc2473f8%22]&experiment=7&plot_metric_keys=[%22val_cv_score%22]&plot_layout={%22autosize%22:true,%22xaxis%22:{},%22yaxis%22:{}}&x_axis=relative&y_axis_scale=linear&line_smoothness=1&show_point=false&deselected_curves=[]&last_linear_y_axis_range=[]
+  
+* exp095 -> m=0.2, 0.3で全部回す(BERT)
+* exp096: BERTModule hidden層の4層平均に加えて, CLS層の4層平均も！
+* exp097: residual
+* exp098: residual + add
+* exp099: add
+* exp100: Adacos Paramtune(epoch=3)
+* exp101: fc_lr tune
+
+# 2021/5/3
+* exp104: 224sizeでたくさんのモデル作ってみる
