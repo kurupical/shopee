@@ -366,7 +366,7 @@ class ShopeeNet(nn.Module):
             text_out = self.final(ret_text, label)
             return x, img_out, text_out, ret, ret_img, ret_text
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -567,7 +567,6 @@ def main(config, fold=0):
 
         df = pd.read_csv("input/shopee-product-matching/train_fold.csv")
 
-        df["title"] = [x.lower() for x in df["title"].values]
         df["filepath"] = df['image'].apply(lambda x: os.path.join('input/shopee-product-matching/', 'train_images', x))
         label_encoder = LabelEncoder()
         df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
@@ -673,12 +672,6 @@ def main(config, fold=0):
 
 
 def main_process():
-
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        cfg.model_name = model_name
-        main(cfg)
 
     for model_name in ["swin_large_patch4_window7_224"]:
         cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")

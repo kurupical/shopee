@@ -191,6 +191,7 @@ class SwishModule(nn.Module):
         return Swish.apply(x)
 
 
+
 @dataclasses.dataclass
 class Config:
     experiment_name: str = None
@@ -202,8 +203,8 @@ class Config:
     dropout_bert_stack: float = 0.2
     dropout_transformer: float = 0.2
     dropout_cnn_fc: float = 0
-    model_name: str = "vit_base_patch16_384"
-    nlp_model_name: str = "bert-base-multilingual-uncased"
+    model_name: str = None
+    nlp_model_name: str = None
     bert_agg: str = "mean"
 
     # arcmargin
@@ -212,18 +213,17 @@ class Config:
 
     # dim
     dim: Tuple[int, int] = (224, 224)
-    dim: Tuple[int, int] = (224, 224)
 
     # optim
-    optimizer: Any = Adam
-    optimizer_params = {}
+    optimizer: Any = AdamW
+    optimizer_params = {"weight_decay": 0.1}
     cnn_lr: float = 4e-5
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
-    transformer_lr: float = 1e-3
+    transformer_lr: float = 1e-5
 
-    scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
+    scheduler = "get_linear_schedule_with_warmup"
+    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*10}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -235,7 +235,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 30
+        epochs: int = 10
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -250,16 +250,16 @@ class Config:
 
 
     # transformers
-    transformer_n_heads: int = 64
-    transformer_dropout: float = 0
-    transformer_num_layers: int = 1
+    transformer_n_heads: int = 8
+    transformer_dropout: float = 0.2
+    transformer_num_layers: int = 2
 
     # activation
     activation: Any = None
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.7
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -277,6 +277,7 @@ class Config:
             ToTensorV2(p=1.0),
     ])
 
+
 class BertModule(nn.Module):
     def __init__(self,
                  bert,
@@ -293,21 +294,9 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        if "distilbert" in self.config.nlp_model_name:
-            text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
-            text = self.bert_bn(text)
-            text = self.dropout_nlp(text)
-        else:
-            text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
+        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
 
-            text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-            text = torch.sum(
-                text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
-            )
-            text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
-            text = self.bert_bn(text)
-            text = self.dropout_nlp(text)
-
+        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
         return text
 
 
@@ -320,14 +309,20 @@ class ShopeeNet(nn.Module):
         self.config = config
         self.bert = BertModule(bert=bert,
                                config=config)
-        self.bert_fc = nn.Linear(self.bert.hidden_size, config.linear_out)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
-        self.cnn_fc = nn.Linear(self.cnn.num_features, config.linear_out)
+        self.cnn_fc = nn.Sequential(
+            nn.Linear(self.cnn.num_features, self.bert.hidden_size),
+            nn.Dropout(config.dropout_cnn_fc)
+        )
 
-        n_feat_concat = config.linear_out*2
+        n_feat_concat = self.bert.hidden_size
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.bert.hidden_size,
+                                                   nhead=config.transformer_n_heads,
+                                                   dropout=config.dropout_transformer)
+        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer,
+                                                 num_layers=config.transformer_num_layers)
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -335,38 +330,41 @@ class ShopeeNet(nn.Module):
 
         self.fc_cnn_out = nn.Sequential(
             nn.Dropout(config.dropout_cnn),
-            nn.Linear(config.linear_out, config.linear_out),
+            nn.Linear(self.cnn.num_features, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
         self.fc_text_out = nn.Sequential(
             nn.Dropout(config.dropout_nlp),
-            nn.Linear(config.linear_out, config.linear_out),
+            nn.Linear(self.bert.hidden_size, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
+
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        img = self.cnn(X_image)
-        img = self.cnn_bn(img)
-        img = self.dropout_cnn(img)
-        img = self.cnn_fc(img)
-
+        img = self.cnn.forward_features(X_image)
+        img_transformer = self.cnn_fc(img.flatten(start_dim=2).transpose(2, 1))
         text = self.bert(input_ids, attention_mask)
-        text = self.bert_fc(text)
-        x = torch.cat([img, text], dim=1)
+
+        x = torch.cat([F.normalize(text), F.normalize(img_transformer)], dim=1)
+        x = self.transformer(x.permute(1, 0, 2)).permute(1, 0, 2)
+        x = x.mean(dim=1)
         ret = self.fc(x)
 
-        ret_img = self.fc_cnn_out(img)
-        ret_text = self.fc_text_out(text)
+        img_out = img.mean(axis=(2, 3))
+        img_out = self.fc_cnn_out(img_out)
+
+        text_out = text.mean(axis=1)
+        text_out = self.fc_text_out(text_out)
 
         if label is not None:
             x = self.final(ret, label)
-            img_out = self.final(ret_img, label)
-            text_out = self.final(ret_text, label)
-            return x, img_out, text_out, ret, ret_img, ret_text
+            img = self.final(img_out, label)
+            text = self.final(text_out, label)
+            return x, img, text, ret, img_out, text_out
         else:
-            return ret_img, ret_text, ret
+            return img_out, text_out, ret
 
 
 class ShopeeDataset(Dataset):
@@ -453,8 +451,7 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch, 
                         LossTexts=loss_texts.avg,
                         Epoch=epoch, LR=optimizer.param_groups[0]['lr'])
 
-        if scheduler.__class__ != ReduceLROnPlateau:
-            scheduler.step()
+        scheduler.step()
         # if not DEBUG:
         #     mlflow.log_metric("train_loss", loss.detach().item())
 
@@ -621,17 +618,19 @@ def main(config, fold=0):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.bert_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.transformer.parameters(), "lr": config.transformer_lr},
                                              {"params": model.fc_cnn_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc_text_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
-                                             {"params": model.final.parameters(), "lr": config.fc_lr}])
-        scheduler = config.scheduler(optimizer, **config.scheduler_params)
+                                             {"params": model.final.parameters(), "lr": config.fc_lr}],
+                                     **config.optimizer_params)
+        if config.scheduler == "get_linear_schedule_with_warmup":
+            scheduler = get_linear_schedule_with_warmup(optimizer, **config.scheduler_params)
+        else:
+            scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
-
         best_score = 0
         not_improved_epochs = 0
         for epoch in range(config.epochs):
@@ -639,7 +638,6 @@ def main(config, fold=0):
                                   optimizer, device, scheduler=scheduler, epoch=epoch)
 
             valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
-            scheduler.step(score)
 
             print(f"CV: {score}")
             if score > best_score:
@@ -674,17 +672,12 @@ def main(config, fold=0):
 
 def main_process():
 
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
+    for model_name in ["efficientnet_b3", "eca_nfnet_l1"]:
+        cfg = Config(experiment_name=f"[transformer]/cnn={model_name}/nlp=roberta")
         cfg.model_name = model_name
+        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
         main(cfg)
 
-    for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
-        cfg.model_name = model_name
-        main(cfg)
 
 if __name__ == "__main__":
     main_process()

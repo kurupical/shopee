@@ -211,8 +211,7 @@ class Config:
     s: float = 32
 
     # dim
-    dim: Tuple[int, int] = (224, 224)
-    dim: Tuple[int, int] = (224, 224)
+    dim: Tuple[int, int] = (384, 384)
 
     # optim
     optimizer: Any = Adam
@@ -293,7 +292,7 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        if "distilbert" in self.config.nlp_model_name:
+        if self.config.nlp_model_name == "cahya/distilbert-base-indonesian":
             text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
             text = self.bert_bn(text)
             text = self.dropout_nlp(text)
@@ -357,16 +356,22 @@ class ShopeeNet(nn.Module):
         x = torch.cat([img, text], dim=1)
         ret = self.fc(x)
 
-        ret_img = self.fc_cnn_out(img)
-        ret_text = self.fc_text_out(text)
+        # residual
+        ret = ret + img + text
+
+        img_out = self.fc_cnn_out(img)
+        text_out = self.fc_text_out(text)
+
+        ret_img = img_out + img
+        ret_text = text_out + text
 
         if label is not None:
             x = self.final(ret, label)
-            img_out = self.final(ret_img, label)
-            text_out = self.final(ret_text, label)
+            img_out = self.final(img_out, label)
+            text_out = self.final(text_out, label)
             return x, img_out, text_out, ret, ret_img, ret_text
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -526,7 +531,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     best_score = 0
 
     posting_ids = np.array(df["posting_id"].values.tolist())
-    for th in np.arange(0.3, 0.9, 0.025):
+    for th in np.arange(0.3, 0.7, 0.025):
         preds = []
         embeddings = torch.tensor(embeddings).cuda()
         embeddings = F.normalize(embeddings)
@@ -567,7 +572,6 @@ def main(config, fold=0):
 
         df = pd.read_csv("input/shopee-product-matching/train_fold.csv")
 
-        df["title"] = [x.lower() for x in df["title"].values]
         df["filepath"] = df['image'].apply(lambda x: os.path.join('input/shopee-product-matching/', 'train_images', x))
         label_encoder = LabelEncoder()
         df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
@@ -674,17 +678,8 @@ def main(config, fold=0):
 
 def main_process():
 
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        cfg.model_name = model_name
-        main(cfg)
-
-    for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
-        cfg.model_name = model_name
-        main(cfg)
+    cfg = Config(experiment_name=f"[bugfix][concat -> residual structure]/nlp_model=bert-multi/cnn_model=vit_base_patch16_384")
+    main(cfg)
 
 if __name__ == "__main__":
     main_process()

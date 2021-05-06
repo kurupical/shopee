@@ -212,7 +212,6 @@ class Config:
 
     # dim
     dim: Tuple[int, int] = (224, 224)
-    dim: Tuple[int, int] = (224, 224)
 
     # optim
     optimizer: Any = Adam
@@ -222,8 +221,8 @@ class Config:
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
+    scheduler = StepLR
+    scheduler_params = {"step_size": 7000, "gamma": 0.1}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -235,7 +234,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 30
+        epochs: int = 10
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -366,7 +365,7 @@ class ShopeeNet(nn.Module):
             text_out = self.final(ret_text, label)
             return x, img_out, text_out, ret, ret_img, ret_text
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -639,7 +638,8 @@ def main(config, fold=0):
                                   optimizer, device, scheduler=scheduler, epoch=epoch)
 
             valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
-            scheduler.step(score)
+            if scheduler.__class__ == ReduceLROnPlateau:
+                scheduler.step(score)
 
             print(f"CV: {score}")
             if score > best_score:
@@ -674,14 +674,8 @@ def main(config, fold=0):
 
 def main_process():
 
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        cfg.model_name = model_name
-        main(cfg)
-
     for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
+        cfg = Config(experiment_name=f"nlp_model=distilbert-indonesian/cnn_model={model_name}/")
         cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
         cfg.model_name = model_name
         main(cfg)

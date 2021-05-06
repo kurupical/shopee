@@ -293,7 +293,7 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        if self.config.nlp_model_name == "cahya/distilbert-base-indonesian":
+        if "distilbert" in self.config.nlp_model_name:
             text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
             text = self.bert_bn(text)
             text = self.dropout_nlp(text)
@@ -366,7 +366,7 @@ class ShopeeNet(nn.Module):
             text_out = self.final(ret_text, label)
             return x, img_out, text_out, ret, ret_img, ret_text
         else:
-            return ret
+            return ret_img, ret_text, ret
 
 
 class ShopeeDataset(Dataset):

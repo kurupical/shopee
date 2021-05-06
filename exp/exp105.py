@@ -202,7 +202,7 @@ class Config:
     dropout_bert_stack: float = 0.2
     dropout_transformer: float = 0.2
     dropout_cnn_fc: float = 0
-    model_name: str = "vit_base_patch16_384"
+    model_name: str = "efficientnet_b3"
     nlp_model_name: str = "bert-base-multilingual-uncased"
     bert_agg: str = "mean"
 
@@ -212,7 +212,6 @@ class Config:
 
     # dim
     dim: Tuple[int, int] = (224, 224)
-    dim: Tuple[int, int] = (224, 224)
 
     # optim
     optimizer: Any = Adam
@@ -220,7 +219,7 @@ class Config:
     cnn_lr: float = 4e-5
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
-    transformer_lr: float = 1e-3
+    transformer_lr: float = 1e-5
 
     scheduler = ReduceLROnPlateau
     scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
@@ -259,7 +258,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.75
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -293,21 +292,9 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        if "distilbert" in self.config.nlp_model_name:
-            text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
-            text = self.bert_bn(text)
-            text = self.dropout_nlp(text)
-        else:
-            text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
+        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
 
-            text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-            text = torch.sum(
-                text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
-            )
-            text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
-            text = self.bert_bn(text)
-            text = self.dropout_nlp(text)
-
+        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
         return text
 
 
@@ -320,14 +307,20 @@ class ShopeeNet(nn.Module):
         self.config = config
         self.bert = BertModule(bert=bert,
                                config=config)
-        self.bert_fc = nn.Linear(self.bert.hidden_size, config.linear_out)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
-        self.cnn_fc = nn.Linear(self.cnn.num_features, config.linear_out)
+        self.cnn_fc = nn.Sequential(
+            nn.Linear(self.cnn.num_features, self.bert.hidden_size),
+            nn.Dropout(config.dropout_cnn_fc)
+        )
 
-        n_feat_concat = config.linear_out*2
+        n_feat_concat = self.bert.hidden_size
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.bert.hidden_size,
+                                                   nhead=config.transformer_n_heads,
+                                                   dropout=config.dropout_transformer)
+        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer,
+                                                 num_layers=config.transformer_num_layers)
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -335,38 +328,41 @@ class ShopeeNet(nn.Module):
 
         self.fc_cnn_out = nn.Sequential(
             nn.Dropout(config.dropout_cnn),
-            nn.Linear(config.linear_out, config.linear_out),
+            nn.Linear(self.cnn.num_features, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
         self.fc_text_out = nn.Sequential(
             nn.Dropout(config.dropout_nlp),
-            nn.Linear(config.linear_out, config.linear_out),
+            nn.Linear(self.bert.hidden_size, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
+
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        img = self.cnn(X_image)
-        img = self.cnn_bn(img)
-        img = self.dropout_cnn(img)
-        img = self.cnn_fc(img)
-
+        img = self.cnn.forward_features(X_image)
+        img_transformer = self.cnn_fc(img.flatten(start_dim=2).transpose(2, 1))
         text = self.bert(input_ids, attention_mask)
-        text = self.bert_fc(text)
-        x = torch.cat([img, text], dim=1)
+
+        x = torch.cat([F.normalize(text), F.normalize(img_transformer)], dim=1)
+        x = self.transformer(x.permute(1, 0, 2)).permute(1, 0, 2)
+        x = x.mean(dim=1)
         ret = self.fc(x)
 
-        ret_img = self.fc_cnn_out(img)
-        ret_text = self.fc_text_out(text)
+        img_out = img.mean(axis=(2, 3))
+        img_out = self.fc_cnn_out(img_out)
+
+        text_out = text.mean(axis=1)
+        text_out = self.fc_text_out(text_out)
 
         if label is not None:
             x = self.final(ret, label)
-            img_out = self.final(ret_img, label)
-            text_out = self.final(ret_text, label)
-            return x, img_out, text_out, ret, ret_img, ret_text
+            img = self.final(img_out, label)
+            text = self.final(text_out, label)
+            return x, img, text, ret, img_out, text_out
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -526,7 +522,7 @@ def get_best_neighbors(embeddings, df, epoch, output_dir):
     best_score = 0
 
     posting_ids = np.array(df["posting_id"].values.tolist())
-    for th in np.arange(0.3, 0.9, 0.025):
+    for th in np.arange(0.3, 0.8, 0.025):
         preds = []
         embeddings = torch.tensor(embeddings).cuda()
         embeddings = F.normalize(embeddings)
@@ -621,10 +617,9 @@ def main(config, fold=0):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.bert_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
+                                             {"params": model.transformer.parameters(), "lr": config.transformer_lr},
                                              {"params": model.fc_cnn_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc_text_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
@@ -674,16 +669,26 @@ def main(config, fold=0):
 
 def main_process():
 
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
+    for n_layers in [4, 6, 8, 10]:
+        cfg = Config(experiment_name=f"[transformer_224]n_layers={n_layers}/nlp_model=bert-multi/cnn_model=effb3/")
+        cfg.transformer_num_layers = n_layers
+        main(cfg)
+
+    for model_name in ["eca_nfnet_l1"]:
+        cfg = Config(experiment_name=f"[transformer_224]/nlp_model=bert-multi/cnn_model={model_name}/")
         cfg.model_name = model_name
         main(cfg)
 
-    for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
-        cfg.model_name = model_name
+    for n_heads in [16, 32, 64]:
+        cfg = Config(experiment_name=f"[transformer_224]n_heads={n_heads}/n_layers=4/nlp_model=bert-multi/cnn_model=effb3/")
+        cfg.transformer_num_layers = 4
+        cfg.transformer_n_heads = n_heads
+        main(cfg)
+
+    for dropout in [0]:
+        cfg = Config(experiment_name=f"[transformer_224]dropout=0/n_layers=4/nlp_model=bert-multi/cnn_model=effb3/")
+        cfg.transformer_num_layers = 4
+        cfg.dropout_transformer = dropout
         main(cfg)
 
 if __name__ == "__main__":

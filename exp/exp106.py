@@ -202,7 +202,7 @@ class Config:
     dropout_bert_stack: float = 0.2
     dropout_transformer: float = 0.2
     dropout_cnn_fc: float = 0
-    model_name: str = "vit_base_patch16_384"
+    model_name: str = "swin_large_patch4_window7_224"
     nlp_model_name: str = "bert-base-multilingual-uncased"
     bert_agg: str = "mean"
 
@@ -673,18 +673,28 @@ def main(config, fold=0):
 
 
 def main_process():
-
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        cfg.model_name = model_name
+    """
+    for lr in [1e-5, 16e-5]:
+        cfg = Config(experiment_name=f"[swin_large_224]lr={lr}/nlp_model=bert-multi/")
+        cfg.cnn_lr = lr
+        main(cfg)
+    for m in [0.8]:
+        cfg = Config(experiment_name=f"[swin_large_224]m={m}/nlp_model=bert-multi/")
+        cfg.metric_layer_params["m"] = m
         main(cfg)
 
-    for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
-        cfg.model_name = model_name
+    for s in [48, 64]:
+        cfg = Config(experiment_name=f"[swin_large_224]s={s}/nlp_model=bert-multi/")
+        cfg.metric_layer_params["s"] = s
         main(cfg)
+    """
+
+    for linear_out in [4096, 4096+2048]:
+        cfg = Config(experiment_name=f"[swin_large_224]linear_out={linear_out}/nlp_model=bert-multi/")
+        cfg.linear_out = linear_out
+        cfg.metric_layer_params["in_features"] = linear_out
+        main(cfg)
+
 
 if __name__ == "__main__":
     main_process()

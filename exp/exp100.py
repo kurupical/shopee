@@ -258,7 +258,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.6
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -673,16 +673,15 @@ def main(config, fold=0):
 
 def main_process():
 
-    for m in [0.2, 0.3, 0.4, 0.5]:
-        cfg = Config(experiment_name=f"[AdaCos/3epoch]m={m}/nlp_model=bert-multi/cnn_model=vit_base_patch16_384/")
-        cfg.metric_layer = AdaCos
-        cfg.metric_layer_params = {
-            "m": m,
-            "in_features": 2048,
-            "out_features": 11014
-        }
-        cfg.epochs = 2
-        main(cfg)
+
+    cfg = Config(experiment_name=f"[AdaCos]/nlp_model=bert-multi/cnn_model=vit_base_patch16_384/")
+    cfg.metric_layer = AdaCos
+    cfg.metric_layer_params = {
+        "m": 0,
+        "in_features": 2048,
+        "out_features": 11014
+    }
+    main(cfg)
 
 if __name__ == "__main__":
     main_process()

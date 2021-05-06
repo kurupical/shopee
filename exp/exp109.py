@@ -191,6 +191,7 @@ class SwishModule(nn.Module):
         return Swish.apply(x)
 
 
+
 @dataclasses.dataclass
 class Config:
     experiment_name: str = None
@@ -202,8 +203,8 @@ class Config:
     dropout_bert_stack: float = 0.2
     dropout_transformer: float = 0.2
     dropout_cnn_fc: float = 0
-    model_name: str = "vit_base_patch16_384"
-    nlp_model_name: str = "bert-base-multilingual-uncased"
+    model_name: str = "swin_large_patch4_window7_224"
+    nlp_model_name: str = "cahya/distilbert-base-indonesian"
     bert_agg: str = "mean"
 
     # arcmargin
@@ -212,18 +213,17 @@ class Config:
 
     # dim
     dim: Tuple[int, int] = (224, 224)
-    dim: Tuple[int, int] = (224, 224)
 
     # optim
-    optimizer: Any = Adam
-    optimizer_params = {}
+    optimizer: Any = AdamW
+    optimizer_params = {"weight_decay": 0.1}
     cnn_lr: float = 4e-5
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
+    scheduler = "get_linear_schedule_with_warmup"
+    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*10}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -235,7 +235,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 30
+        epochs: int = 10
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -366,7 +366,7 @@ class ShopeeNet(nn.Module):
             text_out = self.final(ret_text, label)
             return x, img_out, text_out, ret, ret_img, ret_text
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -453,8 +453,7 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch, 
                         LossTexts=loss_texts.avg,
                         Epoch=epoch, LR=optimizer.param_groups[0]['lr'])
 
-        if scheduler.__class__ != ReduceLROnPlateau:
-            scheduler.step()
+        scheduler.step()
         # if not DEBUG:
         #     mlflow.log_metric("train_loss", loss.detach().item())
 
@@ -628,10 +627,13 @@ def main(config, fold=0):
                                              {"params": model.fc_cnn_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc_text_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
-                                             {"params": model.final.parameters(), "lr": config.fc_lr}])
-        scheduler = config.scheduler(optimizer, **config.scheduler_params)
+                                             {"params": model.final.parameters(), "lr": config.fc_lr}],
+                                     **config.optimizer_params)
+        if config.scheduler == "get_linear_schedule_with_warmup":
+            scheduler = get_linear_schedule_with_warmup(optimizer, **config.scheduler_params)
+        else:
+            scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
-
         best_score = 0
         not_improved_epochs = 0
         for epoch in range(config.epochs):
@@ -639,7 +641,6 @@ def main(config, fold=0):
                                   optimizer, device, scheduler=scheduler, epoch=epoch)
 
             valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
-            scheduler.step(score)
 
             print(f"CV: {score}")
             if score > best_score:
@@ -674,17 +675,12 @@ def main(config, fold=0):
 
 def main_process():
 
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        cfg.model_name = model_name
+    for weight_decay in [0.01, 0.1]:
+        cfg = Config(experiment_name=f"[AdamW+warmup]weight_decay={weight_decay}nlp_model=distilbert-indonesian/cnn_model=swin_large_patch4_window7_224/")
+        cfg.optimizer_params["weight_decay"] = weight_decay
         main(cfg)
 
-    for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
-        cfg.model_name = model_name
-        main(cfg)
+
 
 if __name__ == "__main__":
     main_process()

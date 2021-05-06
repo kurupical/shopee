@@ -70,6 +70,54 @@ class FocalLoss(nn.Module):
             return F_loss
 
 
+def l2_norm(input, axis = 1):
+    norm = torch.norm(input, 2, axis, True)
+    output = torch.div(input, norm)
+
+    return output
+
+
+class CurricularFace(nn.Module):
+    def __init__(self, in_features, out_features, s = 30, m = 0.50):
+        super(CurricularFace, self).__init__()
+
+        print('Using Curricular Face')
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.m = m
+        self.s = s
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.threshold = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
+        self.kernel = nn.Parameter(torch.Tensor(in_features, out_features))
+        self.register_buffer('t', torch.zeros(1))
+        nn.init.normal_(self.kernel, std=0.01)
+
+    def forward(self, embbedings, label):
+        embbedings = l2_norm(embbedings, axis = 1)
+        kernel_norm = l2_norm(self.kernel, axis = 0)
+        cos_theta = torch.mm(embbedings, kernel_norm)
+        cos_theta = cos_theta.clamp(-1, 1)  # for numerical stability
+        with torch.no_grad():
+            origin_cos = cos_theta.clone()
+        target_logit = cos_theta[torch.arange(0, embbedings.size(0)), label].view(-1, 1)
+
+        sin_theta = torch.sqrt(1.0 - torch.pow(target_logit, 2))
+        cos_theta_m = target_logit * self.cos_m - sin_theta * self.sin_m #cos(target+margin)
+        mask = cos_theta > cos_theta_m
+        final_target_logit = torch.where(target_logit > self.threshold, cos_theta_m, target_logit - self.mm)
+
+        hard_example = cos_theta[mask]
+        with torch.no_grad():
+            self.t = target_logit.mean() * 0.01 + (1 - 0.01) * self.t
+        cos_theta[mask] = hard_example * (self.t + hard_example)
+        cos_theta.scatter_(1, label.view(-1, 1).long(), final_target_logit)
+        output = cos_theta * self.s
+        return output
+
+
 class AdaCos(nn.Module):
     """
     https://github.com/4uiiurz1/pytorch-adacos/blob/master/metrics.py
@@ -212,7 +260,6 @@ class Config:
 
     # dim
     dim: Tuple[int, int] = (224, 224)
-    dim: Tuple[int, int] = (224, 224)
 
     # optim
     optimizer: Any = Adam
@@ -222,8 +269,8 @@ class Config:
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
+    scheduler = StepLR
+    scheduler_params = {"step_size": 7000, "gamma": 0.1}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -235,12 +282,12 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 30
+        epochs: int = 10
     early_stop_round: int = 3
     num_classes: int = 11014
 
     # metric learning
-    metric_layer: Any = ArcMarginProduct
+    metric_layer: Any = CurricularFace
     metric_layer_params = {
         "s": s,
         "m": m,
@@ -366,7 +413,7 @@ class ShopeeNet(nn.Module):
             text_out = self.final(ret_text, label)
             return x, img_out, text_out, ret, ret_img, ret_text
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -639,7 +686,8 @@ def main(config, fold=0):
                                   optimizer, device, scheduler=scheduler, epoch=epoch)
 
             valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
-            scheduler.step(score)
+            if scheduler.__class__ == ReduceLROnPlateau:
+                scheduler.step(score)
 
             print(f"CV: {score}")
             if score > best_score:
@@ -673,18 +721,10 @@ def main(config, fold=0):
 
 
 def main_process():
-
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        cfg.model_name = model_name
-        main(cfg)
-
-    for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
-        cfg.model_name = model_name
-        main(cfg)
+    cfg = Config(experiment_name=f"[CurricularFace]nlp_model=distilbert-indonesian/cnn_model=swin_large_patch4_window7_224/")
+    cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
+    cfg.model_name = "swin_large_patch4_window7_224"
+    main(cfg)
 
 if __name__ == "__main__":
     main_process()

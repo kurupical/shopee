@@ -211,8 +211,7 @@ class Config:
     s: float = 32
 
     # dim
-    dim: Tuple[int, int] = (224, 224)
-    dim: Tuple[int, int] = (224, 224)
+    dim: Tuple[int, int] = (384, 384)
 
     # optim
     optimizer: Any = Adam
@@ -259,7 +258,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.7
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -293,7 +292,7 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        if "distilbert" in self.config.nlp_model_name:
+        if self.config.nlp_model_name == "cahya/distilbert-base-indonesian":
             text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
             text = self.bert_bn(text)
             text = self.dropout_nlp(text)
@@ -366,7 +365,7 @@ class ShopeeNet(nn.Module):
             text_out = self.final(ret_text, label)
             return x, img_out, text_out, ret, ret_img, ret_text
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -673,18 +672,13 @@ def main(config, fold=0):
 
 
 def main_process():
-
-    for model_name in ["swin_base_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=bert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        cfg.model_name = model_name
-        main(cfg)
-
-    for model_name in ["swin_large_patch4_window7_224"]:
-        cfg = Config(experiment_name=f"[reproduction]/nlp_model=distilbert-indonesian/cnn_model={model_name}/")
-        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
-        cfg.model_name = model_name
-        main(cfg)
+    for model_name in ["vit_base_patch32_384"]:
+        for lr in [12e-4]:
+            cfg = Config(experiment_name=f"[batch_size=32]/nlp_model=bert-multi/cnn_model={model_name}/")
+            cfg.model_name = model_name
+            cfg.cnn_lr = lr
+            cfg.batch_size = 32
+            main(cfg)
 
 if __name__ == "__main__":
     main_process()
