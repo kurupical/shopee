@@ -9,3 +9,4 @@ work/
 scripts/watch_log/
 scripts/.ipynb_checkpoints/
 scripts/eda2.ipynb
+*.npy

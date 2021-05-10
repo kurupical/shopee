@@ -259,7 +259,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.7
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -671,14 +671,17 @@ def main(config, fold=0):
 
 def main_process():
 
-    for nlp_model_name in ["xlm-roberta-base"]:
-        for num_training_steps in [1700*15]:
-            cfg = Config(experiment_name=f"[num_training_steps]num_training_steps={num_training_steps}/mixer_l16/nlp_model={nlp_model_name}/")
-            cfg.model_name = "mixer_l16_224"
-            cfg.nlp_model_name = nlp_model_name
-            cfg.scheduler_params["num_training_steps"] = num_training_steps
-            cfg.dropout_bert_stack = 0.1
-            main(cfg)
+    for lr in [2e-5]:
+        for nlp_model_name in ["xlm-roberta-base"]:
+            for num_training_steps in [1700*15]:
+                cfg = Config(experiment_name=f"[num_training_steps]num_training_steps={num_training_steps}/mixer_l16/nlp_model={nlp_model_name}/")
+                cfg.model_name = "mixer_l16_224"
+                cfg.nlp_model_name = nlp_model_name
+                cfg.scheduler_params["num_training_steps"] = num_training_steps
+                cfg.dropout_bert_stack = 0.1
+                cfg.cnn_lr = lr
+                cfg.epochs = 15
+                main(cfg)
 
 
 if __name__ == "__main__":

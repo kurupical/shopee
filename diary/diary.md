@@ -266,3 +266,63 @@ http://34.121.203.133:5000/#/metric/val_cv_score?runs=[%223ec191c81ec64b98a586e0
 
 # 2021/5/3
 * exp104: 224sizeでたくさんのモデル作ってみる
+
+* exp105: transformer(ラストトライ) img_size=224
+  * eff_net b3にしていろいろ振る
+
+* exp106: swin_largeをいろいろ振る!
+
+* exp107: vit_patch32_384のbatch_size=32
+
+# 2021/5/5
+アンサンブル実験をここにメモる
+
+* EXP001: 5model 実験(kiccho-san*2, kurupical*3)
+  -> 5000 iterations
+* EXP004: 5model 実験(kurupical*5)
+* EXP005: 4model (6modelから4model選択)
+* EXP007: kiccho-san実験の再現 https://www.kaggle.com/kiccho11/fork-of-stage2-cossim-euclid-optuna6model/data 
+* EXP008: 僕実験の再現
+
+* exp108: StepLRする(exp103)
+
+* exp109: get_linear_schedule_with_warmup + AdamW
+* exp110: CurricularFace
+
+[kiccho-san実験 repro]
+* EXP009: 423-431 3000=> 0.89886
+* EXP010: 423-432
+* EXP011: 431-432
+* EXP012: 383-385
+* EXP013: 386-387 3000=> 0.89856 10000=>0.89863
+* EXP014: 5models
+* EXP015: 6models
+* EXP016: 6->4models これ5並行くらい
+
+# 2021/5/6
+* EXP017: kurupical4model
+* EXP018: 6model(kiccho4-kurupi2)
+
+* exp112: swin_large_patch4 (nlp modelをふる)
+* exp113: vit_base_patch16_384 (nlp modelをふる)
+* exp114: transformer
+* exp115-117: 欠番
+* exp118: residual (x)
+* exp119: residual (img/text)
+* exp120: add&residual (x)
+
+* EXP030: exp
+
+# 2021/5/7
+* exp127: augmentation (SIIM)
+* exp128: augmentation (Google Retrieval)
+
+
+# 2021/5/8
+* replace(",", ".")
+* replace(" ", "")
+
+* multi numeric -> "cm", "mm", "pcs"
+
+# 2021/5/10
+
