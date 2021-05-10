@@ -235,7 +235,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 10
+        epochs: int = 15
     early_stop_round: int = 3
     num_classes: int = 11014
 
