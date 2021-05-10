@@ -235,7 +235,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 10
+        epochs: int = 15
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -670,12 +670,12 @@ def main(config, fold=0):
 
 def main_process():
 
-    for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
-        cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
-        main(cfg)
-
+    cfg = Config(experiment_name=f"[all_data][num_training_steps]/swin_large_224/nlp_model=distilbert-indonesian/")
+    cfg.model_name = "swin_large_patch4_window7_224"
+    cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
+    cfg.scheduler_params["num_training_steps"] = 1700*15
+    cfg.dropout_bert_stack = 0.1
+    main(cfg)
 
 if __name__ == "__main__":
     main_process()

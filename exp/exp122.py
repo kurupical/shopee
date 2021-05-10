@@ -293,15 +293,20 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
+        if "distilbert" in self.config.nlp_model_name:
+            text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
+            text = self.bert_bn(text)
+            text = self.dropout_nlp(text)
+        else:
+            text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
 
-        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-        text = torch.sum(
-            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
-        )
-        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
+            text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
+            text = torch.sum(
+                text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
+            )
+            text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
+            text = self.bert_bn(text)
+            text = self.dropout_nlp(text)
 
         return text
 
@@ -669,13 +674,27 @@ def main(config, fold=0):
 
 
 def main_process():
-
-    for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
+    """
+    for dropout_cnn in [0.2]:
+        cfg = Config(experiment_name=f"[tune dropout]cnn={dropout_cnn}model_name=swin_large/nlp_model=distilbert-base-indonesian")
         cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
+        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
+        cfg.dropout_cnn = dropout_cnn
+        main(cfg)
+    """
+    for dropout_nlp in [0.2]:
+        cfg = Config(experiment_name=f"[tune dropout]nlp={dropout_nlp}model_name=swin_large/nlp_model=distilbert-base-indonesian")
+        cfg.model_name = "swin_large_patch4_window7_224"
+        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
+        cfg.dropout_nlp = dropout_nlp
         main(cfg)
 
+    for dropout_fc in [0, 0.2]:
+        cfg = Config(experiment_name=f"[tune dropout]fc={dropout_fc}model_name=swin_large/nlp_model=distilbert-base-indonesian")
+        cfg.model_name = "swin_large_patch4_window7_224"
+        cfg.nlp_model_name = "cahya/distilbert-base-indonesian"
+        cfg.dropout_fc = dropout_fc
+        main(cfg)
 
 if __name__ == "__main__":
     main_process()

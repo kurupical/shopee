@@ -235,7 +235,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 10
+        epochs: int = 15
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -671,10 +671,28 @@ def main(config, fold=0):
 def main_process():
 
     for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
-        cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
-        main(cfg)
+        for ratio in [1/4, 1/2, 2, 4]:
+            cfg = Config(experiment_name=f"[num_training_steps]num_training_steps={num_training_steps}/swin_large_224/nlp_model={nlp_model_name}/")
+            cfg.model_name = "swin_large_patch4_window7_224"
+            cfg.nlp_model_name = nlp_model_name
+            cfg.fc_lr = cfg.fc_lr * ratio
+            cfg.cnn_lr = cfg.cnn_lr * ratio
+            cfg.bert_lr = cfg.bert_lr * ratio
+            cfg.scheduler_params["num_training_steps"] = 1700*15
+            cfg.dropout_bert_stack = 0.1
+            main(cfg)
+
+        for dropout in [0.25, 0.4]:
+            cfg = Config(experiment_name=f"[num_training_steps]num_training_steps={num_training_steps}/swin_large_224/nlp_model={nlp_model_name}/")
+            cfg.model_name = "swin_large_patch4_window7_224"
+            cfg.nlp_model_name = nlp_model_name
+            cfg.dropout_nlp = dropout
+            cfg.dropout_cnn = dropout
+            cfg.dropout_cnn_fc = dropout
+
+            cfg.scheduler_params["num_training_steps"] = 1700*15
+            cfg.dropout_bert_stack = 0.1
+            main(cfg)
 
 
 if __name__ == "__main__":

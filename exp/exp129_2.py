@@ -212,7 +212,7 @@ class Config:
     s: float = 32
 
     # dim
-    dim: Tuple[int, int] = (224, 224)
+    dim: Tuple[int, int] = (256, 256)
 
     # optim
     optimizer: Any = AdamW
@@ -220,17 +220,17 @@ class Config:
     cnn_lr: float = 4e-5
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
-    transformer_lr: float = 1e-3
+    transformer_lr: float = 1e-5
 
     scheduler = "get_linear_schedule_with_warmup"
-    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*10}
+    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*20}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
 
     # training
     batch_size: int = 16
-    num_workers: int = 2
+    num_workers: int = 4
 
     if DEBUG:
         epochs: int = 1
@@ -250,16 +250,16 @@ class Config:
 
 
     # transformers
-    transformer_n_heads: int = 64
-    transformer_dropout: float = 0
-    transformer_num_layers: int = 1
+    transformer_n_heads: int = 8
+    transformer_dropout: float = 0.2
+    transformer_num_layers: int = 2
 
     # activation
     activation: Any = None
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -277,6 +277,7 @@ class Config:
             ToTensorV2(p=1.0),
     ])
 
+
 class BertModule(nn.Module):
     def __init__(self,
                  bert,
@@ -292,18 +293,47 @@ class BertModule(nn.Module):
         self.bert_bn = nn.BatchNorm1d(self.hidden_size)
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
-    def forward(self, input_ids, attention_mask):
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
+    def forward(self, input_ids, attention_mask, image):
 
-        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-        text = torch.sum(
-            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
+        text_embeddings = self.bert.embeddings.word_embeddings(input_ids)  # shape = (bs, 128, 768)
+
+        attention_mask_out = []
+        embeddings_out = []
+        image_indice = []
+        text_indice = []
+        for i in range(len(input_ids)):
+            text_length = attention_mask[i].sum()
+            attention_mask_out.append(torch.cat([torch.ones(text_length),
+                                                 torch.ones(256),
+                                                 torch.zeros(128 - text_length)]))
+            embeddings_out.append(torch.cat([text_embeddings[i, :text_length, :],
+                                             image[i],
+                                             text_embeddings[i, text_length:, :]], dim=0))
+            image_indice.append(torch.arange(text_length, text_length + 256))
+            text_indice.append(torch.cat([
+                torch.arange(0, text_length),
+                torch.arange(text_length+256, 256+128)
+            ]))
+
+        attention_mask = torch.stack(attention_mask_out).to("cuda")
+        embeddings = torch.stack(embeddings_out).to("cuda")
+
+        del attention_mask_out, embeddings_out
+        gc.collect()
+
+        image_indice = torch.stack(image_indice).to("cuda")
+        text_indice = torch.stack(text_indice).to("cuda")
+
+        text_original = self.bert(inputs_embeds=embeddings, attention_mask=attention_mask, output_hidden_states=True)[2]
+        text_original = torch.stack([self.dropout_stack(x) for x in text_original[-4:]]).mean(dim=0)
+        ret = torch.sum(
+            text_original * attention_mask.unsqueeze(-1), dim=1, keepdim=False
         )
-        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
+        ret = ret / torch.sum(attention_mask, dim=-1, keepdim=True)
+        ret = self.bert_bn(ret)
+        ret = self.dropout_nlp(ret)
 
-        return text
+        return ret
 
 
 class ShopeeNet(nn.Module):
@@ -315,53 +345,33 @@ class ShopeeNet(nn.Module):
         self.config = config
         self.bert = BertModule(bert=bert,
                                config=config)
-        self.bert_fc = nn.Linear(self.bert.hidden_size, config.linear_out)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
-        self.cnn_fc = nn.Linear(self.cnn.num_features, config.linear_out)
+        self.cnn_fc = nn.Sequential(
+            nn.Linear(self.cnn.num_features, self.bert.hidden_size),
+            nn.Dropout(config.dropout_cnn_fc)
+        )
 
-        n_feat_concat = config.linear_out*2
+        n_feat_concat = self.bert.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
-            nn.BatchNorm1d(config.linear_out)
+            nn.BatchNorm1d(config.linear_out),
         )
 
-        self.fc_cnn_out = nn.Sequential(
-            nn.Dropout(config.dropout_cnn),
-            nn.Linear(config.linear_out, config.linear_out),
-            nn.BatchNorm1d(config.linear_out)
-        )
-        self.fc_text_out = nn.Sequential(
-            nn.Dropout(config.dropout_nlp),
-            nn.Linear(config.linear_out, config.linear_out),
-            nn.BatchNorm1d(config.linear_out)
-        )
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        img = self.cnn(X_image)
-        img = self.cnn_bn(img)
-        img = self.dropout_cnn(img)
-        img = self.cnn_fc(img)
-
-        text = self.bert(input_ids, attention_mask)
-        text = self.bert_fc(text)
-        x = torch.cat([img, text], dim=1)
+        x = self.bert(input_ids, attention_mask, X_image)
         ret = self.fc(x)
 
-        ret_img = self.fc_cnn_out(img)
-        ret_text = self.fc_text_out(text)
 
         if label is not None:
             x = self.final(ret, label)
-            img_out = self.final(ret_img, label)
-            text_out = self.final(ret_text, label)
-            return x, img_out, text_out, ret, ret_img, ret_text
+            return x, ret
         else:
-            return ret_img, ret_text, ret
+            return ret
 
 
 class ShopeeDataset(Dataset):
@@ -381,12 +391,21 @@ class ShopeeDataset(Dataset):
         image = cv2.imread(row.filepath)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        text = self.tokenizer(text, padding="max_length", max_length=128, truncation=True, return_tensors="pt")
-        input_ids = text["input_ids"][0]
-        attention_mask = text["attention_mask"][0]
+        images = []
         if self.augmentations:
             augmented = self.augmentations(image=image)
             image = augmented['image']
+
+        for x in range(16):
+            for y in range(16):
+                images.append(image[:, x*16:(x+1)*16, y*16:(y+1)*16])
+
+        image = np.stack(images)  # shape=(256, 3, 16, 16)
+        image = image.reshape(256, -1)  # shape = (256, 786)
+
+        text = self.tokenizer(text, padding="max_length", max_length=128, truncation=True, return_tensors="pt")
+        input_ids = text["input_ids"][0]
+        attention_mask = text["attention_mask"][0]
 
         return image, input_ids, attention_mask, torch.tensor(row.label_group)
 
@@ -430,22 +449,15 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch, 
 
         optimizer.zero_grad()
 
-        output, img, text, _, _, _ = model(images, input_ids, attention_mask, targets)
+        output, _, = model(images, input_ids, attention_mask, targets)
 
-        loss_output = criterion(output, targets)
-        loss_img = criterion(img, targets)
-        loss_text = criterion(text, targets)
-        loss = loss_output + loss_img + loss_text
+        loss = criterion(output, targets)
         loss.backward()
         optimizer.step()
 
         loss_score.update(loss.detach().item(), batch_size)
-        loss_outputs.update(loss_output.detach().item(), batch_size)
-        loss_imgs.update(loss_img.detach().item(), batch_size)
-        loss_texts.update(loss_text.detach().item(), batch_size)
+        loss_outputs.update(loss.detach().item(), batch_size)
         tk0.set_postfix(LossOutputs=loss_outputs.avg,
-                        LossImgs=loss_imgs.avg,
-                        LossTexts=loss_texts.avg,
                         Epoch=epoch, LR=optimizer.param_groups[0]['lr'])
 
         scheduler.step()
@@ -474,7 +486,7 @@ def eval_fn(data_loader, model, criterion, device, df_val, epoch, output_dir):
             attention_mask = d[2].to(device)
             targets = d[3].to(device)
 
-            output, _, _, feature, img, text = model(images, input_ids, attention_mask, targets)
+            output, feature = model(images, input_ids, attention_mask, targets)
 
             loss = criterion(output, targets)
 
@@ -482,17 +494,12 @@ def eval_fn(data_loader, model, criterion, device, df_val, epoch, output_dir):
             tk0.set_postfix(Eval_Loss=loss_score.avg)
 
             all_features.extend(feature.detach().cpu().numpy())
-            all_images.extend(img.detach().cpu().numpy())
-            all_texts.extend(text.detach().cpu().numpy())
             all_targets.extend(targets.detach().cpu().numpy())
 
     all_features = np.array(all_features, dtype=np.float32)
-    all_images = np.array(all_images, dtype=np.float32)
-    all_texts = np.array(all_texts, dtype=np.float32)
 
     np.save(f"{output_dir}/embeddings_all_epoch{epoch}.npy", all_features)
-    np.save(f"{output_dir}/embeddings_images_epoch{epoch}.npy", all_images)
-    np.save(f"{output_dir}/embeddings_texts_epoch{epoch}.npy", all_texts)
+
 
     del all_images, all_texts
     gc.collect()
@@ -553,7 +560,7 @@ def main(config, fold=0):
 
     if config.experiment_name is None:
         raise ValueError
-    try:
+    if True:
         seed_torch(19900222)
         output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
         os.makedirs(output_dir)
@@ -615,12 +622,8 @@ def main(config, fold=0):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.bert_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
-                                             {"params": model.fc_cnn_out.parameters(), "lr": config.fc_lr},
-                                             {"params": model.fc_text_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.final.parameters(), "lr": config.fc_lr}],
                                      **config.optimizer_params)
@@ -662,7 +665,7 @@ def main(config, fold=0):
 
         if not DEBUG:
             mlflow.end_run()
-    except Exception as e:
+    else:
         print(e)
         if not DEBUG:
             mlflow.end_run()
@@ -670,11 +673,13 @@ def main(config, fold=0):
 
 def main_process():
 
-    for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
-        cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
-        main(cfg)
+    for model_name in ["efficientnet_b3"]:
+        for lr in [5e-5]:
+            cfg = Config(experiment_name=f"[transformer_bertinput]/lr={lr}")
+            cfg.model_name = model_name
+            cfg.bert_lr = lr
+            cfg.nlp_model_name = "bert-base-multilingual-uncased"
+            main(cfg)
 
 
 if __name__ == "__main__":

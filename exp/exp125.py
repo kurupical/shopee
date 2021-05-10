@@ -223,7 +223,7 @@ class Config:
     transformer_lr: float = 1e-3
 
     scheduler = "get_linear_schedule_with_warmup"
-    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*10}
+    scheduler_params = {"num_warmup_steps": 1700*2, "num_training_steps": 1700*10}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -259,7 +259,7 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.7
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -671,7 +671,7 @@ def main(config, fold=0):
 def main_process():
 
     for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
+        cfg = Config(experiment_name=f"[exp112+num_warmup_steps=1700*2]")
         cfg.model_name = "swin_large_patch4_window7_224"
         cfg.nlp_model_name = nlp_model_name
         main(cfg)

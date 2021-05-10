@@ -671,10 +671,12 @@ def main(config, fold=0):
 def main_process():
 
     for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
-        cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
-        main(cfg)
+        for dropout_bert_stack in [0, 0.1, 0.5]:
+            cfg = Config(experiment_name=f"[dropout_bert_stack]dout={dropout_bert_stack}/swin_large_224/nlp_model={nlp_model_name}/")
+            cfg.model_name = "swin_large_patch4_window7_224"
+            cfg.nlp_model_name = nlp_model_name
+            cfg.dropout_bert_stack = dropout_bert_stack
+            main(cfg)
 
 
 if __name__ == "__main__":

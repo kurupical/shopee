@@ -16,7 +16,7 @@ from sklearn.model_selection import KFold
 from sklearn.neighbors import NearestNeighbors
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts, StepLR
 from torch.optim import Adam, Optimizer, SGD
-import albumentations
+import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 import dataclasses
 import tqdm
@@ -259,22 +259,20 @@ class Config:
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.7
 
     # transforms
-    train_transforms: Any = albumentations.Compose([
-        albumentations.HorizontalFlip(p=0.5),
-        albumentations.ImageCompression(quality_lower=99, quality_upper=100),
-        albumentations.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=10, border_mode=0, p=0.7),
-        albumentations.Resize(dim[0], dim[1]),
-        albumentations.Cutout(max_h_size=int(dim[0] * 0.4), max_w_size=int(dim[0] * 0.4), num_holes=1, p=0.5),
-        albumentations.Normalize(),
+    train_transforms: Any = A.Compose([
+        A.Resize(dim[0], dim[1]),
+        A.VerticalFlip(p=0.5),
+        A.HorizontalFlip(p=0.5),
+        A.Normalize(),
         ToTensorV2(p=1.0),
     ])
-    val_transforms: Any = albumentations.Compose([
-            albumentations.Resize(dim[0], dim[1], always_apply=True),
-            albumentations.Normalize(),
-            ToTensorV2(p=1.0),
+    val_transforms: Any = A.Compose([
+        A.Resize(dim[0], dim[1], always_apply=True),
+        A.Normalize(),
+        ToTensorV2(p=1.0),
     ])
 
 class BertModule(nn.Module):
@@ -671,7 +669,7 @@ def main(config, fold=0):
 def main_process():
 
     for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
+        cfg = Config(experiment_name=f"[exp112+siim-isic_1st_augmentation]")
         cfg.model_name = "swin_large_patch4_window7_224"
         cfg.nlp_model_name = nlp_model_name
         main(cfg)

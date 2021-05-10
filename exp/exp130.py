@@ -293,15 +293,20 @@ class BertModule(nn.Module):
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
     def forward(self, input_ids, attention_mask):
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
+        if "distilbert" in self.config.nlp_model_name:
+            text = self.bert(input_ids=input_ids, attention_mask=attention_mask)[0].mean(dim=1)
+            text = self.bert_bn(text)
+            text = self.dropout_nlp(text)
+        else:
+            text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
 
-        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-        text = torch.sum(
-            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
-        )
-        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
+            text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
+            text = torch.sum(
+                text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
+            )
+            text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
+            text = self.bert_bn(text)
+            text = self.dropout_nlp(text)
 
         return text
 
@@ -670,10 +675,23 @@ def main(config, fold=0):
 
 def main_process():
 
-    for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
-        cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
+    for i in range(100):
+        np.random.seed(i)
+        cfg = Config(experiment_name=f"[swin_base_patch4_window7_224]/random")
+        cfg.model_name = "swin_base_patch4_window7_224"
+        cfg.nlp_model_name = "bert-base-multilingual-uncased"
+        cfg.bert_lr = np.random.choice(np.arange(0.1e-5, 10e-5, 5e-6))
+        cfg.cnn_lr = np.random.choice(np.arange(0.1e-4, 10e-4, 5e-5))
+        cfg.linear_out = np.random.choice(np.arange(512, 512*8, 64))
+        cfg.m = np.random.normal(loc=0.5, scale=0.15)
+        cfg.s = np.random.normal(loc=40, scale=10)
+        cfg.dropout_nlp = np.random.choice(np.arange(0.1, 0.7, 0.05))
+        cfg.dropout_cnn = np.random.choice(np.arange(0.1, 0.7, 0.05))
+        cfg.dropout_bert_stack - np.random.choice(np.arange(0.1, 0.7, 0.05))
+
+        cfg.metric_layer_params["in_features"] = cfg.linear_out
+        cfg.metric_layer_params["m"] = cfg.m
+        cfg.metric_layer_params["s"] = cfg.s
         main(cfg)
 
 

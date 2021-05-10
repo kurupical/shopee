@@ -223,7 +223,7 @@ class Config:
     transformer_lr: float = 1e-3
 
     scheduler = "get_linear_schedule_with_warmup"
-    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*10}
+    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*15}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -235,7 +235,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 10
+        epochs: int = 15
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -669,12 +669,12 @@ def main(config, fold=0):
 
 
 def main_process():
-
-    for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
-        cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
-        main(cfg)
+    for nlp_model_name in ["cahya/bert-base-indonesian-522M"]:
+        for num_training_steps in [1700 * 15, 1700 * 25, 1700 * 40]:
+            cfg = Config(experiment_name=f"[num_training_steps]num_training_steps={num_training_steps}/swin_base_224/nlp_model={nlp_model_name}/")
+            cfg.model_name = "swin_base_patch4_window7_224"
+            cfg.nlp_model_name = nlp_model_name
+            main(cfg)
 
 
 if __name__ == "__main__":

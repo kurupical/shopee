@@ -29,6 +29,7 @@ class ShopeeDataset(Dataset):
 
         image = cv2.imread(row.filepath)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        text = text.lower()
         text = self.tokenizer(text, max_length=128, padding="max_length", truncation=True, return_tensors="pt")
 
         input_ids = text["input_ids"][0]
@@ -175,7 +176,8 @@ def get_model(model_path):
             "net_module": exp104_3out.ShopeeNet,
             "config": exp104_3out.Config(linear_out=2048,
                                          dim=(224, 224),
-                                         model_name="eca_nfnet_l1"),
+                                         model_name="eca_nfnet_l1",
+                                         nlp_model_name="bert"),
         }
         return ret
 
@@ -187,7 +189,8 @@ def get_model(model_path):
             "net_module": exp103_3out.ShopeeNet,
             "config": exp103_3out.Config(linear_out=2048,
                                          dim=(224, 224),
-                                         model_name="swin_base_patch4_window7_224"),
+                                         model_name="swin_base_patch4_window7_224",
+                                         nlp_model_name="bert"),
         }
         return ret
 
@@ -211,7 +214,8 @@ def get_model(model_path):
             "net_module": exp104_3out.ShopeeNet,
             "config": exp104_3out.Config(linear_out=2048,
                                          dim=(224, 224),
-                                         model_name="vit_base_patch16_224"),
+                                         model_name="vit_base_patch16_224",
+                                         nlp_model_name="bert"),
         }
         return ret
 
@@ -223,8 +227,65 @@ def get_model(model_path):
             "model_name": model_path,
             "net_module": exp112.ShopeeNet,
             "config": exp112.Config(linear_out=2048,
-                                         dim=(224, 224),
-                                         model_name="swin_large_patch4_window7_224"),
+                                    dim=(224, 224),
+                                    model_name="swin_large_patch4_window7_224",
+                                    nlp_model_name="xlm-roberta-base"),
+        }
+        return ret
+
+    if "swin_large_bert_multi_exp112.pth" in model_path:
+        import exp112
+        ret = {
+            "nlp_config": "/kaggle/input/huggingface-bert/bert-base-multilingual-uncased",
+            "model_path": model_path,
+            "model_name": model_path,
+            "net_module": exp112.ShopeeNet,
+            "config": exp112.Config(linear_out=2048,
+                                    dim=(224, 224),
+                                    model_name="swin_large_patch4_window7_224",
+                                    nlp_model_name="bert-base-multilingual-uncased"),
+        }
+        return ret
+
+    if "swin_base_xlm_roberta_exp113.pth" in model_path:
+        import exp113
+        ret = {
+            "nlp_config": "/kaggle/input/xlm-roberta-base",
+            "model_path": model_path,
+            "model_name": model_path,
+            "net_module": exp113.ShopeeNet,
+            "config": exp113.Config(linear_out=2048,
+                                    dim=(224, 224),
+                                    model_name="swin_base_patch4_window7_224",
+                                    nlp_model_name="xlm-roberta-base"),
+        }
+        return ret
+
+    if "transformer_effv3_bertindonesian_exp114.pth" in model_path:
+        import exp114
+        ret = {
+            "nlp_config": "/kaggle/input/cahya-bert",
+            "model_path": model_path,
+            "model_name": model_path,
+            "net_module": exp114.ShopeeNet,
+            "config": exp114.Config(linear_out=2048,
+                                    dim=(224, 224),
+                                    model_name="efficientnet_b3",
+                                    nlp_model_name="bert_indonesian"),
+        }
+        return ret
+
+    if "swin_large_roberta_exp133.pth" in model_path:
+        import exp133
+        ret = {
+            "nlp_config": "/kaggle/input/xlm-roberta-base",
+            "model_path": model_path,
+            "model_name": model_path,
+            "net_module": exp133.ShopeeNet,
+            "config": exp133.Config(linear_out=2048,
+                                    dim=(224, 224),
+                                    model_name="swin_large_patch4_window7_224",
+                                    nlp_model_name="xlm-roberta-base"),
         }
         return ret
 

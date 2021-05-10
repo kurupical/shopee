@@ -212,7 +212,7 @@ class Config:
     s: float = 32
 
     # dim
-    dim: Tuple[int, int] = (224, 224)
+    dim: Tuple[int, int] = (256, 256)
 
     # optim
     optimizer: Any = AdamW
@@ -220,17 +220,17 @@ class Config:
     cnn_lr: float = 4e-5
     bert_lr: float = 1e-5
     fc_lr: float = 5e-4
-    transformer_lr: float = 1e-3
+    transformer_lr: float = 1e-5
 
     scheduler = "get_linear_schedule_with_warmup"
-    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*10}
+    scheduler_params = {"num_warmup_steps": 1700*3, "num_training_steps": 1700*10}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
 
     # training
     batch_size: int = 16
-    num_workers: int = 2
+    num_workers: int = 8
 
     if DEBUG:
         epochs: int = 1
@@ -250,16 +250,16 @@ class Config:
 
 
     # transformers
-    transformer_n_heads: int = 64
-    transformer_dropout: float = 0
-    transformer_num_layers: int = 1
+    transformer_n_heads: int = 8
+    transformer_dropout: float = 0.2
+    transformer_num_layers: int = 2
 
     # activation
     activation: Any = None
 
     # debug mode
     debug: bool = DEBUG
-    gomi_score_threshold: float = 0.8
+    gomi_score_threshold: float = 0.7
 
     # transforms
     train_transforms: Any = albumentations.Compose([
@@ -277,6 +277,7 @@ class Config:
             ToTensorV2(p=1.0),
     ])
 
+
 class BertModule(nn.Module):
     def __init__(self,
                  bert,
@@ -292,18 +293,76 @@ class BertModule(nn.Module):
         self.bert_bn = nn.BatchNorm1d(self.hidden_size)
         self.dropout_stack = nn.Dropout(config.dropout_bert_stack)
 
-    def forward(self, input_ids, attention_mask):
-        text = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)[2]
+    def forward(self, input_ids, attention_mask, image):
 
-        text = torch.stack([self.dropout_stack(x) for x in text[-4:]]).mean(dim=0)
-        text = torch.sum(
-            text * attention_mask.unsqueeze(-1), dim=1, keepdim=False
+        text_embeddings = self.bert.embeddings.word_embeddings(input_ids)  # shape = (bs, 128, 768)
+
+        attention_mask_out = []
+        embeddings_out = []
+        image_indice = []
+        text_indice = []
+        for i in range(len(input_ids)):
+            text_length = attention_mask[i].sum()
+            attention_mask_out.append(torch.cat([torch.ones(text_length),
+                                                 torch.ones(256),
+                                                 torch.zeros(128 - text_length)]))
+            embeddings_out.append(torch.cat([text_embeddings[i, :text_length, :],
+                                             image[i],
+                                             text_embeddings[i, text_length:, :]], dim=0))
+            image_indice.append(torch.arange(text_length, text_length + 256))
+            text_indice.append(torch.cat([
+                torch.arange(0, text_length),
+                torch.arange(text_length+256, 256+128)
+            ]))
+
+        attention_mask = torch.stack(attention_mask_out).to("cuda")
+        embeddings = torch.stack(embeddings_out).to("cuda")
+
+        del attention_mask_out, embeddings_out
+        gc.collect()
+
+        image_indice = torch.stack(image_indice).to("cuda")
+        text_indice = torch.stack(text_indice).to("cuda")
+
+        text_original = self.bert(inputs_embeds=embeddings, attention_mask=attention_mask, output_hidden_states=True)[2]
+        text_original = torch.stack([self.dropout_stack(x) for x in text_original[-4:]]).mean(dim=0)
+        ret = torch.sum(
+            text_original * attention_mask.unsqueeze(-1), dim=1, keepdim=False
         )
-        text = text / torch.sum(attention_mask, dim=-1, keepdim=True)
-        text = self.bert_bn(text)
-        text = self.dropout_nlp(text)
+        ret = ret / torch.sum(attention_mask, dim=-1, keepdim=True)
+        ret = self.bert_bn(ret)
+        ret = self.dropout_nlp(ret)
 
-        return text
+        ret_imgs = []
+        ret_texts = []
+        for i in range(len(text_original)):
+            image_idx = image_indice[i]
+            text_idx = text_indice[i]
+            ret_img = torch.sum(
+                text_original[i:i+1, image_idx] * attention_mask[i:i+1, image_idx].unsqueeze(-1), dim=1, keepdim=False
+            )
+            ret_img = ret_img / torch.sum(attention_mask[i:i+1, image_idx], dim=-1, keepdim=True)
+            ret_imgs.append(ret_img)
+            del ret_img
+            gc.collect()
+
+            ret_text = torch.sum(
+                text_original[i:i+1, text_idx] * attention_mask[i:i+1, text_idx].unsqueeze(-1), dim=1, keepdim=False
+            )
+            ret_text = ret_text / torch.sum(attention_mask[i:i+1, text_idx], dim=-1, keepdim=True)
+            ret_texts.append(ret_text)
+            del ret_text
+            gc.collect()
+
+        ret_img = torch.cat(ret_imgs).to("cuda")
+        ret_img = self.bert_bn(ret_img)
+        ret_img = self.dropout_nlp(ret_img)
+
+        ret_text = torch.cat(ret_texts).to("cuda")
+        ret_text = self.bert_bn(ret_text)
+        ret_text = self.dropout_nlp(ret_text)
+
+        return ret, ret_img, ret_text
 
 
 class ShopeeNet(nn.Module):
@@ -315,14 +374,15 @@ class ShopeeNet(nn.Module):
         self.config = config
         self.bert = BertModule(bert=bert,
                                config=config)
-        self.bert_fc = nn.Linear(self.bert.hidden_size, config.linear_out)
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
-        self.cnn_fc = nn.Linear(self.cnn.num_features, config.linear_out)
+        self.cnn_fc = nn.Sequential(
+            nn.Linear(self.cnn.num_features, self.bert.hidden_size),
+            nn.Dropout(config.dropout_cnn_fc)
+        )
 
-        n_feat_concat = config.linear_out*2
+        n_feat_concat = self.bert.hidden_size
         self.fc = nn.Sequential(
             nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
@@ -330,26 +390,20 @@ class ShopeeNet(nn.Module):
 
         self.fc_cnn_out = nn.Sequential(
             nn.Dropout(config.dropout_cnn),
-            nn.Linear(config.linear_out, config.linear_out),
+            nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
         self.fc_text_out = nn.Sequential(
             nn.Dropout(config.dropout_nlp),
-            nn.Linear(config.linear_out, config.linear_out),
+            nn.Linear(n_feat_concat, config.linear_out),
             nn.BatchNorm1d(config.linear_out)
         )
+
         self.dropout_cnn = nn.Dropout(config.dropout_cnn)
         self.final = config.metric_layer(**config.metric_layer_params)
 
     def forward(self, X_image, input_ids, attention_mask, label=None):
-        img = self.cnn(X_image)
-        img = self.cnn_bn(img)
-        img = self.dropout_cnn(img)
-        img = self.cnn_fc(img)
-
-        text = self.bert(input_ids, attention_mask)
-        text = self.bert_fc(text)
-        x = torch.cat([img, text], dim=1)
+        x, img, text = self.bert(input_ids, attention_mask, X_image)
         ret = self.fc(x)
 
         ret_img = self.fc_cnn_out(img)
@@ -381,12 +435,21 @@ class ShopeeDataset(Dataset):
         image = cv2.imread(row.filepath)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        text = self.tokenizer(text, padding="max_length", max_length=128, truncation=True, return_tensors="pt")
-        input_ids = text["input_ids"][0]
-        attention_mask = text["attention_mask"][0]
+        images = []
         if self.augmentations:
             augmented = self.augmentations(image=image)
             image = augmented['image']
+
+        for x in range(16):
+            for y in range(16):
+                images.append(image[:, x*16:(x+1)*16, y*16:(y+1)*16])
+
+        image = np.stack(images)  # shape=(256, 3, 16, 16)
+        image = image.reshape(256, -1)  # shape = (256, 786)
+
+        text = self.tokenizer(text, padding="max_length", max_length=128, truncation=True, return_tensors="pt")
+        input_ids = text["input_ids"][0]
+        attention_mask = text["attention_mask"][0]
 
         return image, input_ids, attention_mask, torch.tensor(row.label_group)
 
@@ -553,7 +616,7 @@ def main(config, fold=0):
 
     if config.experiment_name is None:
         raise ValueError
-    try:
+    if True:
         seed_torch(19900222)
         output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
         os.makedirs(output_dir)
@@ -615,9 +678,7 @@ def main(config, fold=0):
         model = ShopeeNet(config=config)
         model.to("cuda")
         optimizer = config.optimizer(params=[{"params": model.bert.parameters(), "lr": config.bert_lr},
-                                             {"params": model.bert_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn.parameters(), "lr": config.cnn_lr},
-                                             {"params": model.cnn_bn.parameters(), "lr": config.fc_lr},
                                              {"params": model.cnn_fc.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc_cnn_out.parameters(), "lr": config.fc_lr},
                                              {"params": model.fc_text_out.parameters(), "lr": config.fc_lr},
@@ -662,7 +723,7 @@ def main(config, fold=0):
 
         if not DEBUG:
             mlflow.end_run()
-    except Exception as e:
+    else:
         print(e)
         if not DEBUG:
             mlflow.end_run()
@@ -670,10 +731,10 @@ def main(config, fold=0):
 
 def main_process():
 
-    for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
-        cfg.model_name = "swin_large_patch4_window7_224"
-        cfg.nlp_model_name = nlp_model_name
+    for model_name in ["efficientnet_b3"]:
+        cfg = Config(experiment_name=f"[transformer_bertinput]/cnn={model_name}/nlp=bert-base")
+        cfg.model_name = model_name
+        cfg.nlp_model_name = "bert-base-multilingual-uncased"
         main(cfg)
 
 

@@ -29,9 +29,7 @@ import re
 import gc
 
 """
-とりあえずこれベースに頑張って写経する
-https://www.kaggle.com/tanulsingh077/pytorch-metric-learning-pipeline-only-images
-https://www.kaggle.com/zzy990106/b0-bert-cv0-9
+http://34.121.203.133:5000/#/metric/val_cv_score?runs=[%22dcbbb7b07f784b4982c80aa7b035137a%22]&experiment=7&plot_metric_keys=[%22val_cv_score%22]&plot_layout={%22autosize%22:true,%22xaxis%22:{%22autorange%22:true,%22type%22:%22linear%22},%22yaxis%22:{}}&x_axis=step&y_axis_scale=linear&line_smoothness=1&show_point=false&deselected_curves=[]&last_linear_y_axis_range=[]
 """
 
 DEBUG = False
@@ -221,8 +219,8 @@ class Config:
     fc_lr: float = 5e-4
     transformer_lr: float = 1e-3
 
-    scheduler = ReduceLROnPlateau
-    scheduler_params = {"patience": 0, "factor": 0.1, "mode": "max"}
+    scheduler = StepLR
+    scheduler_params = {"step_size": 1700*6, "gamma": 0.1}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -234,7 +232,7 @@ class Config:
     if DEBUG:
         epochs: int = 1
     else:
-        epochs: int = 30
+        epochs: int = 8
     early_stop_round: int = 3
     num_classes: int = 11014
 
@@ -458,8 +456,7 @@ def train_fn(dataloader, model, criterion, optimizer, device, scheduler, epoch, 
                         LossTexts=loss_texts.avg,
                         Epoch=epoch, LR=optimizer.param_groups[0]['lr'])
 
-        if scheduler.__class__ != ReduceLROnPlateau:
-            scheduler.step()
+        scheduler.step()
         # if not DEBUG:
         #     mlflow.log_metric("train_loss", loss.detach().item())
 
@@ -590,17 +587,12 @@ def main(config, fold=0):
                 mlflow.log_param(key, value)
             mlflow.log_param("fold", fold)
 
-        df_train = df[df["fold"] != fold]
-        df_val = df[df["fold"] == fold]
         # df_train = df[df["label_group"] % 5 != 0]
         # df_val = df[df["label_group"] % 5 == 0]
 
-        train_dataset = ShopeeDataset(df=df_train,
+        train_dataset = ShopeeDataset(df=df,
                                       transforms=config.train_transforms,
                                       tokenizer=tokenizer)
-        val_dataset = ShopeeDataset(df=df_val,
-                                    transforms=config.val_transforms,
-                                    tokenizer=tokenizer)
 
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -609,15 +601,6 @@ def main(config, fold=0):
             pin_memory=True,
             drop_last=True,
             num_workers=config.num_workers
-        )
-
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=config.batch_size,
-            num_workers=config.num_workers,
-            shuffle=False,
-            pin_memory=True,
-            drop_last=False,
         )
 
         device = torch.device("cuda")
@@ -636,37 +619,11 @@ def main(config, fold=0):
         scheduler = config.scheduler(optimizer, **config.scheduler_params)
         criterion = config.loss(**config.loss_params)
 
-        best_score = 0
-        not_improved_epochs = 0
         for epoch in range(config.epochs):
             train_loss = train_fn(train_loader, model, criterion,
                                   optimizer, device, scheduler=scheduler, epoch=epoch)
 
-            valid_loss, score, best_threshold, df_best = eval_fn(val_loader, model, criterion, device, df_val, epoch, output_dir)
-            scheduler.step(score)
-
-            print(f"CV: {score}")
-            if score > best_score:
-                print('best model found for epoch {}, {:.4f} -> {:.4f}'.format(epoch, best_score, score))
-                best_score = score
-                torch.save(model.state_dict(), f'{output_dir}/best_fold{fold}.pth')
-                not_improved_epochs = 0
-                if not DEBUG:
-                    mlflow.log_metric("val_best_cv_score", score, step=epoch)
-                df_best.to_csv(f"{output_dir}/df_val_fold{fold}.csv", index=False)
-            else:
-                not_improved_epochs += 1
-                print('{:.4f} is not improved from {:.4f} epoch {} / {}'.format(score, best_score, not_improved_epochs, config.early_stop_round))
-                if not_improved_epochs >= config.early_stop_round:
-                    print("finish training.")
-                    break
-            if best_score < config.gomi_score_threshold:
-                print("finish training(スコアダメなので打ち切り).")
-                break
-            if not DEBUG:
-                mlflow.log_metric("val_loss", valid_loss.avg, step=epoch)
-                mlflow.log_metric("val_cv_score", score, step=epoch)
-                mlflow.log_metric("val_best_threshold", best_threshold, step=epoch)
+            torch.save(model.state_dict(), f'{output_dir}/best_epoch{epoch}.pth')
 
         if not DEBUG:
             mlflow.end_run()
@@ -678,7 +635,7 @@ def main(config, fold=0):
 
 def main_process():
 
-    cfg = Config(experiment_name=f"[bugfix][concat -> residual structure]/nlp_model=bert-multi/cnn_model=vit_base_patch16_384")
+    cfg = Config(experiment_name=f"[ALL][concat -> residual structure]/nlp_model=bert-multi/cnn_model=vit_base_patch16_384")
     main(cfg)
 
 if __name__ == "__main__":

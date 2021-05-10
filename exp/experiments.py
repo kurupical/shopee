@@ -1,11 +1,27 @@
-from exp.exp021.exp021 import main_process as exp021
-exp021()
-del exp021
-
-from exp.exp019.exp019 import main_process as exp019
-exp019()
-del exp019
-
-from exp.exp020.exp020 import main_process as exp020
-exp020()
-del exp020
+{
+    'kiccho_exp472_all_cossim': 0.35,
+    'kiccho_exp474_all_cossim': 0.5,
+    'swin_base_xlm_roberta_exp113.pth_all_cossim': 0.35,
+    'swin_large_bert_multi_exp112.pth_all_cossim': 0.5,
+    'kiccho_exp472_img_cossim': 0.44999999999999996,
+    'kiccho_exp474_img_cossim': 0.39999999999999997,
+    'swin_base_xlm_roberta_exp113.pth_img_cossim': 0.6,
+    'swin_large_bert_multi_exp112.pth_img_cossim': 0.8,
+    'kiccho_exp472_text_cossim': 0.65,
+    'kiccho_exp474_text_cossim': 0.7,
+    'swin_base_xlm_roberta_exp113.pth_text_cossim': 0.65,
+    'swin_large_bert_multi_exp112.pth_text_cossim': 0.8,
+    'kiccho_exp472_all_euclidean': 1.15,
+    'kiccho_exp474_all_euclidean': 1.15,
+    'swin_base_xlm_roberta_exp113.pth_all_euclidean': 1.15,
+    'swin_large_bert_multi_exp112.pth_all_euclidean': 0.85,
+    'kiccho_exp472_img_euclidean': 1.1,
+    'kiccho_exp474_img_euclidean': 1.0,
+    'swin_base_xlm_roberta_exp113.pth_img_euclidean': 1.1,
+    'swin_large_bert_multi_exp112.pth_img_euclidean': 0.9,
+    'kiccho_exp472_text_euclidean': 1.0,
+    'kiccho_exp474_text_euclidean': 0.85,
+    'swin_base_xlm_roberta_exp113.pth_text_euclidean': 1.15,
+    'swin_large_bert_multi_exp112.pth_text_euclidean': 1.1,
+    'vote': 11
+}

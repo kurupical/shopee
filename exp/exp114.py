@@ -223,7 +223,7 @@ class Config:
     transformer_lr: float = 1e-5
 
     scheduler = "get_linear_schedule_with_warmup"
-    scheduler_params = {"num_warmup_steps": 1700, "num_training_steps": 1700*10}
+    scheduler_params = {"num_warmup_steps": 1700*3, "num_training_steps": 1700*10}
 
     loss: Any = nn.CrossEntropyLoss
     loss_params = {}
@@ -672,11 +672,13 @@ def main(config, fold=0):
 
 def main_process():
 
-    for model_name in ["efficientnet_b3", "eca_nfnet_l1"]:
-        cfg = Config(experiment_name=f"[transformer]/cnn={model_name}/nlp=roberta")
-        cfg.model_name = model_name
-        cfg.nlp_model_name = "cahya/bert-base-indonesian-522M"
-        main(cfg)
+    for model_name in ["efficientnet_b3"]:
+        for n_layers in [6, 8]:
+            cfg = Config(experiment_name=f"[transformer]/cnn={model_name}/nlp=roberta")
+            cfg.model_name = model_name
+            cfg.transformer_num_layers = n_layers
+            cfg.nlp_model_name = "bert-base-multilingual-uncased"
+            main(cfg)
 
 
 if __name__ == "__main__":

@@ -561,7 +561,7 @@ def main(config, fold=0):
 
         df = pd.read_csv("input/shopee-product-matching/train_fold.csv")
 
-        df["title"] = [x.lower() for x in df["title"].values]
+        # df["title"] = [x.lower() for x in df["title"].values]
         df["filepath"] = df['image'].apply(lambda x: os.path.join('input/shopee-product-matching/', 'train_images', x))
         label_encoder = LabelEncoder()
         df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
@@ -671,7 +671,7 @@ def main(config, fold=0):
 def main_process():
 
     for nlp_model_name in ["xlm-roberta-base"]:
-        cfg = Config(experiment_name=f"[swin_large_224]/nlp_model={nlp_model_name}/")
+        cfg = Config(experiment_name=f"[exp112+no_lower_title]/nlp_model={nlp_model_name}/")
         cfg.model_name = "swin_large_patch4_window7_224"
         cfg.nlp_model_name = nlp_model_name
         main(cfg)
