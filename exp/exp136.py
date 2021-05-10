@@ -555,14 +555,14 @@ def main(config, fold=0):
         raise ValueError
     try:
         seed_torch(19900222)
-        output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
+        output_dir = f"/content/drive/MyDrive/kaggle-shopee/output/kurupical_{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
         os.makedirs(output_dir)
         # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=min_lr, last_epoch=-1)
 
-        df = pd.read_csv("input/shopee-product-matching/train_fold.csv")
+        df = pd.read_csv("/content/drive/MyDrive/kaggle-shopee/input/train_fold.csv")
 
         df["title"] = [x.lower() for x in df["title"].values]
-        df["filepath"] = df['image'].apply(lambda x: os.path.join('input/shopee-product-matching/', 'train_images', x))
+        df["filepath"] = df['image'].apply(lambda x: os.path.join('/content/kaggle-shopee/input/shopee-product-matching/', 'train_images', x))
         label_encoder = LabelEncoder()
         df["label_group"] = label_encoder.fit_transform(df["label_group"].values)
 

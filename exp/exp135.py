@@ -319,8 +319,8 @@ class ShopeeNet(nn.Module):
         self.cnn = create_model(config.model_name,
                                 pretrained=pretrained,
                                 num_classes=0)
-        self.cnn_bn = nn.BatchNorm1d(self.cnn.num_features)
-        self.cnn_fc = nn.Linear(self.cnn.num_features, config.linear_out)
+        self.cnn_bn = nn.BatchNorm1d(1024)
+        self.cnn_fc = nn.Linear(1024, config.linear_out)
 
         n_feat_concat = config.linear_out*2
         self.fc = nn.Sequential(
