@@ -317,8 +317,9 @@ class ShopeeNet(nn.Module):
                                config=config)
         self.bert_fc = nn.Linear(self.bert.hidden_size, config.linear_out)
         self.cnn = create_model(config.model_name,
-                                pretrained=pretrained,
-                                num_classes=0)
+                                pretrained=pretrained)
+        self.cnn.head = nn.Identity()
+
         self.cnn_bn = nn.BatchNorm1d(1024)
         self.cnn_fc = nn.Linear(1024, config.linear_out)
 
@@ -553,7 +554,7 @@ def main(config, fold=0):
 
     if config.experiment_name is None:
         raise ValueError
-    try:
+    if True:
         seed_torch(19900222)
         output_dir = f"output/{os.path.basename(__file__)[:-3]}/{dt.now().strftime('%Y%m%d%H%M%S')}"
         os.makedirs(output_dir)
@@ -662,7 +663,7 @@ def main(config, fold=0):
 
         if not DEBUG:
             mlflow.end_run()
-    except Exception as e:
+    else:
         print(e)
         if not DEBUG:
             mlflow.end_run()
